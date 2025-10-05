@@ -8,7 +8,7 @@ const CitationVerifier = () => {
   const [error, setError] = useState(null);
   const [progress, setProgress] = useState('');
   const [fileName, setFileName] = useState('');
-  const [apiKey, setApiKey] = useState(''); // Add API key input
+  const [userToken, setUserToken] = useState(''); // New state for user token
   const [darkMode, setDarkMode] = useState(localStorage.getItem('darkMode') === 'true');
 
   useEffect(() => {
@@ -34,35 +34,6 @@ const CitationVerifier = () => {
       console.error('JSON parsing error:', err);
       throw new Error('Failed to parse AI response');
     }
-  };
-
-  // DeepSeek API call function
-  const callDeepSeek = async (messages, maxTokens = 8000) => {
-    if (!apiKey) {
-      throw new Error('DeepSeek API key is required');
-    }
-
-    const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model: "deepseek-chat",
-        messages: messages,
-        max_tokens: maxTokens,
-        temperature: 0.1,
-        stream: false
-      })
-    });
-
-    if (!response.ok) {
-      throw new Error(`DeepSeek API request failed: ${response.status}`);
-    }
-
-    const data = await response.json();
-    return data.choices[0].message.content;
   };
 
   const handleFileUpload = async (event) => {
@@ -114,8 +85,8 @@ const CitationVerifier = () => {
   };
 
   const analyzeText = async () => {
-    if (!apiKey) {
-      setError('Please enter your DeepSeek API key');
+    if (!userToken) {
+      setError('Please enter your access token');
       return;
     }
 
@@ -125,118 +96,27 @@ const CitationVerifier = () => {
     setProgress('Analyzing publication and extracting claims...');
 
     try {
-      // Step 1: Extract claims and citations
-      const extractPrompt = `Analyze this academic text and extract key claims and citations.
+      const response = await fetch('http://localhost:3001/api/analyze', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ token: userToken, text: text }),
+      });
 
-Text: "${text}"
-
-YOU MUST RESPOND WITH ONLY A VALID JSON OBJECT. NO OTHER TEXT BEFORE OR AFTER THE JSON.
-
-Format:
-{
-  "keyClaims": [
-    {"claim": "text of claim", "requiresCitation": true, "hasCitation": false, "citationText": "author year or empty"}
-  ],
-  "explicitCitations": [
-    {"text": "citation as appears", "authors": "if identifiable", "year": "if identifiable"}
-  ],
-  "missingCitations": ["claim without proper citation"],
-  "documentType": "full article or abstract or other"
-}
-
-RESPOND ONLY WITH THE JSON OBJECT ABOVE. DO NOT ADD ANY EXPLANATORY TEXT.`;
-
-      const extractResponse = await callDeepSeek([
-        { role: "user", content: extractPrompt }
-      ], 8000);
-
-      const extraction = parseJSON(extractResponse);
-
-      setProgress('Verifying citations and checking credibility...');
-
-      // Step 2: Verify claims (limit to 3 for performance)
-      const claimsToCheck = extraction.keyClaims.slice(0, 3);
-      const searchResults = [];
-
-      for (const claim of claimsToCheck) {
-        try {
-          const searchPrompt = `Assess the credibility and verifiability of this claim from an academic publication: "${claim.claim}"
-
-${claim.citationText ? `The claim cites: ${claim.citationText}` : 'No citation provided for this claim.'}
-
-YOU MUST RESPOND WITH ONLY A VALID JSON OBJECT. NO OTHER TEXT.
-
-Format:
-{
-  "claim": "${claim.claim}",
-  "credibilityScore": "high or medium or low",
-  "supportingEvidence": ["brief point 1", "brief point 2"],
-  "contradictingEvidence": ["brief point if found"],
-  "retractionsFound": false,
-  "reasoning": "one sentence explanation",
-  "citationStatus": "properly cited or missing citation or questionable citation"
-}
-
-RESPOND ONLY WITH THE JSON OBJECT. NO ADDITIONAL TEXT.`;
-
-          const searchResponse = await callDeepSeek([
-            { role: "user", content: searchPrompt }
-          ], 1500);
-
-          const result = parseJSON(searchResponse);
-          searchResults.push(result);
-        } catch (err) {
-          console.error("Search error for claim:", err);
-          searchResults.push({
-            claim: claim.claim,
-            credibilityScore: "unknown",
-            reasoning: "Unable to verify due to API error"
-          });
-        }
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || `Request failed: ${response.status}`);
       }
 
-      setProgress('Generating comprehensive peer review...');
+      const data = await response.json();
+      const analysisResult = parseJSON(data.analysis);
 
-      // Step 3: Generate peer review
-      const reviewPrompt = `You are a critical peer reviewer. Review this academic text based on the analysis below.
-
-Document Type: ${extraction.documentType}
-Key Claims: ${JSON.stringify(extraction.keyClaims)}
-Explicit Citations: ${JSON.stringify(extraction.explicitCitations)}
-Missing Citations: ${JSON.stringify(extraction.missingCitations)}
-Credibility Results: ${JSON.stringify(searchResults)}
-
-YOU MUST RESPOND WITH ONLY A VALID JSON OBJECT. NO OTHER TEXT.
-
-Format:
-{
-  "overallAssessment": "high quality or medium quality or low quality",
-  "strengths": ["strength 1", "strength 2"],
-  "weaknesses": ["weakness 1", "weakness 2"],
-  "citationQuality": "one sentence assessment",
-  "majorConcerns": ["concern 1", "concern 2"],
-  "recommendations": ["recommendation 1", "recommendation 2"],
-  "verdict": "accept or minor revisions or major revisions or reject",
-  "documentTypeNote": "note about limitations if abstract only"
-}
-
-RESPOND ONLY WITH THE JSON OBJECT. NO ADDITIONAL TEXT BEFORE OR AFTER.`;
-
-      const reviewResponse = await callDeepSeek([
-        { role: "user", content: reviewPrompt }
-      ], 2500);
-
-      const review = parseJSON(reviewResponse);
-
-      setAnalysis({
-        extraction,
-        searchResults,
-        review
-      });
+      setAnalysis(analysisResult);
       setProgress('');
     } catch (err) {
       console.error("Analysis error:", err);
-      setError(`Analysis failed: ${err.message}. Please check your API key and try again.`);
+      setError(`Analysis failed: ${err.message}.`);
       setProgress('');
     } finally {
       setLoading(false);
@@ -364,15 +244,15 @@ RESPOND ONLY WITH THE JSON OBJECT. NO ADDITIONAL TEXT BEFORE OR AFTER.`;
           </div>
 
           <div className="mb-6">
-            <label className="block text-sm font-semibold text-gray-700 dark:text-neutral-content mb-2">DeepSeek API Key *</label>
+            <label className="block text-sm font-semibold text-gray-700 dark:text-neutral-content mb-2">Your Access Token *</label>
             <input
               type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="Enter your DeepSeek API key"
+              value={userToken}
+              onChange={(e) => setUserToken(e.target.value)}
+              placeholder="Enter your access token"
               className="w-full p-3 bg-gray-100 dark:bg-base-300 border border-gray-300 dark:border-base-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent transition"
             />
-            <p className="text-sm text-gray-500 dark:text-neutral-content mt-1">Your API key is required for analysis and is not stored anywhere.</p>
+            <p className="text-sm text-gray-500 dark:text-neutral-content mt-1">Your access token is required for analysis.</p>
           </div>
 
           <div className="bg-indigo-50 dark:bg-primary/10 border border-indigo-200 dark:border-primary/20 rounded-lg p-4 mb-6">
@@ -420,7 +300,7 @@ RESPOND ONLY WITH THE JSON OBJECT. NO ADDITIONAL TEXT BEFORE OR AFTER.`;
 
           <button
             onClick={analyzeText}
-            disabled={loading || !text.trim() || !apiKey}
+            disabled={loading || !text.trim() || !userToken}
             className="w-full bg-primary text-white py-3 px-6 rounded-lg font-semibold hover:bg-primary/90 disabled:bg-gray-400 dark:disabled:bg-base-300 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-transform duration-200 transform hover:scale-105"
           >
             {loading ? (
