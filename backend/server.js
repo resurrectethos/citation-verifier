@@ -1,5 +1,12 @@
 export default {
   async fetch(request, env, ctx) {
+    if (request.method === 'GET') {
+      return new Response(JSON.stringify({ message: 'This is the backend for the Citation Verifier application. Please use the frontend to access the service.' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      });
+    }
+
     if (request.method === 'OPTIONS') {
       return handleOptions(request);
     }
