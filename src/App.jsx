@@ -96,7 +96,7 @@ const CitationVerifier = () => {
     setProgress('Analyzing publication and extracting claims...');
 
     try {
-      const response = await fetch('http://localhost:3001/api/analyze', {
+      const response = await fetch('https://citation-verifier-backend.preggyr.workers.dev', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -110,9 +110,7 @@ const CitationVerifier = () => {
       }
 
       const data = await response.json();
-      const analysisResult = parseJSON(data.analysis);
-
-      setAnalysis(analysisResult);
+      setAnalysis(data.analysis);
       setProgress('');
     } catch (err) {
       console.error("Analysis error:", err);
