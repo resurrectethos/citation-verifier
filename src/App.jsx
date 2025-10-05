@@ -1,11 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Suspense } from 'react';
 import { Search, AlertCircle, CheckCircle, XCircle, Loader2, FileText, Upload, Info, Download, Sun, Moon } from 'lucide-react';
-import * as pdfjs from 'pdfjs-dist';
 
-// Set workerSrc to avoid issues with Vite
-pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
-
-export default function CitationVerifier() {
+const CitationVerifier = () => {
   const [text, setText] = useState('');
   const [analysis, setAnalysis] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -83,6 +79,8 @@ export default function CitationVerifier() {
         const reader = new FileReader();
         reader.onload = async (e) => {
           try {
+            const pdfjs = await import('pdfjs-dist/build/pdf');
+            pdfjs.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
             const typedarray = new Uint8Array(e.target.result);
             const pdf = await pdfjs.getDocument(typedarray).promise;
             let content = '';
@@ -275,7 +273,8 @@ RESPOND ONLY WITH THE JSON OBJECT. NO ADDITIONAL TEXT BEFORE OR AFTER.`;
     const filename = fileName ? fileName.replace(/\.[^/.]+$/, '') : 'publication';
     
     let markdown = `# Publication Citation Verification Report\n\n`;
-    markdown += `**Generated:** ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}\n`;
+    markdown += `**Generated:** ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}
+`;
     markdown += `**Document:** ${fileName || 'Pasted text'}\n\n`;
     
     if (analysis.extraction.documentType) {
@@ -557,4 +556,12 @@ RESPOND ONLY WITH THE JSON OBJECT. NO ADDITIONAL TEXT BEFORE OR AFTER.`;
       </div>
     </div>
   );
+}
+
+export default function App() {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <CitationVerifier />
+    </Suspense>
+  )
 }
