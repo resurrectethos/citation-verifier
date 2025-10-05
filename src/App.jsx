@@ -80,7 +80,7 @@ const CitationVerifier = () => {
         reader.onload = async (e) => {
           try {
             const pdfjs = await import('pdfjs-dist/build/pdf');
-            pdfjs.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
+            pdfjs.GlobalWorkerOptions.workerSrc = `/pdf.worker.min.mjs`;
             const typedarray = new Uint8Array(e.target.result);
             const pdf = await pdfjs.getDocument(typedarray).promise;
             let content = '';
