@@ -10,6 +10,20 @@ const CitationVerifier = () => {
   const [fileName, setFileName] = useState('');
   const [userToken, setUserToken] = useState(''); // New state for user token
   const [darkMode, setDarkMode] = useState(localStorage.getItem('darkMode') === 'true');
+  const [wordCount, setWordCount] = useState(0);
+  const [tokenCount, setTokenCount] = useState(0);
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  useEffect(() => {
+    setIsAdmin(userToken === 'admin-secret-token');
+  }, [userToken]);
+
+  useEffect(() => {
+    const words = text.trim().split(/\s+/);
+    const wordCount = text.trim() === '' ? 0 : words.length;
+    setWordCount(wordCount);
+    setTokenCount(Math.ceil(text.length / 4));
+  }, [text]);
 
   useEffect(() => {
     if (darkMode) {
@@ -222,6 +236,33 @@ const CitationVerifier = () => {
     URL.revokeObjectURL(url);
   };
 
+  const downloadUsageReport = async () => {
+    try {
+      const response = await fetch('https://citation-verifier-backend.preggyr.workers.dev/admin/usage-report', {
+        headers: {
+          'Authorization': `Bearer ${userToken}`,
+        },
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || `Request failed: ${response.status}`);
+      }
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'usage-report.csv';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(`Failed to download usage report: ${err.message}`);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gray-100 dark:bg-base-100 text-gray-900 dark:text-base-content p-4 sm:p-6 lg:p-8">
       <div className="max-w-7xl mx-auto">
@@ -294,11 +335,23 @@ const CitationVerifier = () => {
               className="w-full h-64 p-4 bg-gray-100 dark:bg-base-300 border border-gray-300 dark:border-base-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent font-mono text-sm"
               placeholder="Paste the full article text, editorial, or abstract here..."
             />
+            <div className="text-sm text-gray-500 dark:text-neutral-content mt-2 flex justify-between">
+              <span>Word Count: {wordCount}</span>
+              <span>Token Estimate: {tokenCount}</span>
+            </div>
+            {wordCount > 8500 && (
+              <div className="mt-4 p-4 bg-red-50 dark:bg-red-900/50 border border-red-200 dark:border-red-900/70 rounded-lg">
+                <p className="text-red-800 dark:text-red-300 flex items-center gap-2">
+                  <AlertCircle className="w-5 h-5" />
+                  Word count exceeds 8500 words. Please shorten the text.
+                </p>
+              </div>
+            )}
           </div>
 
           <button
             onClick={analyzeText}
-            disabled={loading || !text.trim() || !userToken}
+            disabled={loading || !text.trim() || !userToken || wordCount > 8500}
             className="w-full bg-primary text-white py-3 px-6 rounded-lg font-semibold hover:bg-primary/90 disabled:bg-gray-400 dark:disabled:bg-base-300 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-transform duration-200 transform hover:scale-105"
           >
             {loading ? (
@@ -341,13 +394,24 @@ const CitationVerifier = () => {
                   <h3 className="text-2xl font-bold text-gray-800 dark:text-white">Export Review Report</h3>
                   <p className="text-gray-600 dark:text-neutral-content">Download a comprehensive markdown report of this analysis.</p>
                 </div>
-                <button
-                  onClick={downloadReview}
-                  className="flex items-center gap-2 px-6 py-3 bg-green-600 text-white rounded-lg font-semibold hover:bg-green-700 transition-transform duration-200 transform hover:scale-105"
-                >
-                  <Download className="w-5 h-5" />
-                  <span>Download Review</span>
-                </button>
+                <div className="flex gap-4">
+                  <button
+                    onClick={downloadReview}
+                    className="flex items-center gap-2 px-6 py-3 bg-green-600 text-white rounded-lg font-semibold hover:bg-green-700 transition-transform duration-200 transform hover:scale-105"
+                  >
+                    <Download className="w-5 h-5" />
+                    <span>Download Review</span>
+                  </button>
+                  {isAdmin && (
+                    <button
+                      onClick={downloadUsageReport}
+                      className="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition-transform duration-200 transform hover:scale-105"
+                    >
+                      <Download className="w-5 h-5" />
+                      <span>Download Usage Report</span>
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
 

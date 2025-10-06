@@ -1,5 +1,27 @@
+
+let userTokens = new Map([['user1-token', { usage: 0 }], ['user2-token', { usage: 0 }]]);
+
 export default {
   async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+
+    if (url.pathname === '/upload-users' && request.method === 'POST') {
+      return handleUserUpload(request);
+    }
+
+    if (url.pathname === '/users' && request.method === 'GET') {
+      return listUsers();
+    }
+
+    if (url.pathname === '/admin/usage-report' && request.method === 'GET') {
+      return handleUsageReport(request);
+    }
+
+    if (url.pathname.startsWith('/users/') && request.method === 'DELETE') {
+      const token = url.pathname.split('/')[2];
+      return deleteUser(token);
+    }
+
     if (request.method === 'GET') {
       return new Response(JSON.stringify({ message: 'This is the backend for the Citation Verifier application. Please use the frontend to access the service.' }), {
         status: 200,
@@ -17,23 +39,16 @@ export default {
 
     const { token, text } = await request.json();
 
-    // In a real application, you would use a more robust user management system
-    // and store usage data in a durable store like KV or D1.
-    const users = {
-      'user1-token': { usage: 0 },
-      'user2-token': { usage: 0 },
-    };
-
-    if (!token || !users[token]) {
+    if (!token || !userTokens.has(token)) {
       return new Response(JSON.stringify({ error: 'Unauthorized: Invalid token' }), {
         status: 401,
         headers: { 'Content-Type': 'application/json', ...corsHeaders },
       });
     }
 
-    const user = users[token];
+    const user = userTokens.get(token);
 
-    if (user.usage >= 2) {
+    if (user.usage >= 5) {
       return new Response(JSON.stringify({ error: 'Usage limit exceeded.' }), {
         status: 429,
         headers: { 'Content-Type': 'application/json', ...corsHeaders },
@@ -42,7 +57,7 @@ export default {
 
     try {
       const analysis = await performAnalysis(text, env.DEEPSEEK_API_KEY);
-      user.usage++; // Note: This is an in-memory increment, not durable.
+      user.usage++;
       return new Response(JSON.stringify({ analysis }), {
         headers: { 'Content-Type': 'application/json', ...corsHeaders },
       });
@@ -55,10 +70,82 @@ export default {
   },
 };
 
+async function handleUserUpload(request) {
+  const contentType = request.headers.get('content-type') || '';
+  if (contentType.includes('multipart/form-data')) {
+    const formData = await request.formData();
+    const file = formData.get('userFile');
+    if (!file) {
+      return new Response(JSON.stringify({ error: 'File not provided' }), { status: 400 });
+    }
+    const content = await file.text();
+    const newUsers = content.split(/\n|,/).map(u => u.trim()).filter(Boolean);
+    newUsers.forEach(user => userTokens.set(user, { usage: 0 }));
+    return new Response(JSON.stringify({ message: `${newUsers.length} users added.` }), {
+      headers: { 'Content-Type': 'application/json', ...corsHeaders },
+    });
+  } else {
+    return new Response(JSON.stringify({ error: 'Invalid content type' }), { status: 400 });
+  }
+}
+
+function listUsers() {
+  return new Response(JSON.stringify(Object.fromEntries(userTokens)), {
+    headers: { 'Content-Type': 'application/json', ...corsHeaders },
+  });
+}
+
+function deleteUser(token) {
+  if (userTokens.has(token)) {
+    userTokens.delete(token);
+    return new Response(JSON.stringify({ message: `User ${token} deleted.` }), {
+      headers: { 'Content-Type': 'application/json', ...corsHeaders },
+    });
+  } else {
+    return new Response(JSON.stringify({ error: 'User not found' }), {
+      status: 404,
+      headers: { 'Content-Type': 'application/json', ...corsHeaders },
+    });
+  }
+}
+
+const adminToken = 'admin-secret-token';
+
+async function handleUsageReport(request) {
+  const providedToken = request.headers.get('Authorization')?.split(' ')?.[1];
+  if (providedToken !== adminToken) {
+    return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json', ...corsHeaders },
+    });
+  }
+
+  let csv = 'hashed_user_token,usage_count\n';
+  for (const [token, data] of userTokens.entries()) {
+    const hashedToken = await hashToken(token);
+    csv += `${hashedToken},${data.usage}\n`;
+  }
+
+  return new Response(csv, {
+    headers: { 
+      'Content-Type': 'text/csv', 
+      ...corsHeaders,
+      'Content-Disposition': 'attachment; filename="usage-report.csv"',
+    },
+  });
+}
+
+async function hashToken(token) {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(token);
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Methods': 'POST, GET, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
 
 function handleOptions(request) {
@@ -73,7 +160,7 @@ function handleOptions(request) {
   } else {
     return new Response(null, {
       headers: {
-        Allow: 'POST, OPTIONS',
+        Allow: 'POST, GET, DELETE, OPTIONS',
       },
     });
   }
