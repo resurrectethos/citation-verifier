@@ -13,6 +13,8 @@ const CitationVerifier = () => {
   const [wordCount, setWordCount] = useState(0);
   const [tokenCount, setTokenCount] = useState(0);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [showDropdown, setShowDropdown] = useState(false);
+  const [showReviewDropdown, setShowReviewDropdown] = useState(false);
 
   useEffect(() => {
     setIsAdmin(userToken === 'admin-secret-token');
@@ -158,91 +160,133 @@ const CitationVerifier = () => {
     return 'text-gray-400';
   };
 
-  const downloadReview = () => {
+  const downloadReview = async (format) => {
     if (!analysis) return;
 
     const timestamp = new Date().toISOString().split('T')[0];
     const filename = fileName ? fileName.replace(/\.[^/.]+$/, '') : 'publication';
-    
-    let markdown = `# Publication Citation Verification Report\n\n`;
-    markdown += `**Generated:** ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}
-`;
-    markdown += `**Document:** ${fileName || 'Pasted text'}\n\n`;
-    
-    if (analysis.extraction.documentType) {
-      markdown += `**Document Type:** ${analysis.extraction.documentType}\n\n`;
-    }
-    
-    markdown += `---\n\n## Peer Review Verdict\n\n`;
-    markdown += `**Verdict:** ${analysis.review.verdict}\n`;
-    markdown += `**Overall Assessment:** ${analysis.review.overallAssessment}\n`;
-    markdown += `**Citation Quality:** ${analysis.review.citationQuality}\n\n`;
 
-    markdown += `### Strengths\n`;
-    analysis.review.strengths.forEach(s => markdown += `- ${s}\n`);
-    markdown += `\n### Weaknesses\n`;
-    analysis.review.weaknesses.forEach(w => markdown += `- ${w}\n`);
-    markdown += `\n### Major Concerns\n`;
-    analysis.review.majorConcerns.forEach(c => markdown += `- ${c}\n`);
-    markdown += `\n### Recommendations\n`;
-    analysis.review.recommendations.forEach(r => markdown += `- ${r}\n`);
+    let content;
+    let blobType;
+    let fileExtension;
 
-    if (analysis.review.documentTypeNote) {
-      markdown += `\n**Note on Document Type:** ${analysis.review.documentTypeNote}\n`;
-    }
-
-    markdown += `\n---\n\n## Detailed Claim Verification\n\n`;
-
-    analysis.searchResults.forEach(result => {
-      markdown += `### Claim: "${result.claim}"\n`;
-      markdown += `- **Credibility Score:** ${result.credibilityScore}\n`;
-      markdown += `- **Citation Status:** ${result.citationStatus}\n`;
-      markdown += `- **Reasoning:** ${result.reasoning}\n`;
-      if (result.supportingEvidence?.length > 0) {
-        markdown += `- **Supporting Evidence:**\n`;
-        result.supportingEvidence.forEach(e => markdown += `  - ${e}\n`);
+    const generateMarkdown = () => {
+      let markdown = `# Publication Citation Verification Report\n\n`;
+      markdown += `**Generated:** ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}\n`;
+      markdown += `**Document:** ${fileName || 'Pasted text'}\n\n`;
+      if (analysis.extraction.documentType) {
+        markdown += `**Document Type:** ${analysis.extraction.documentType}\n\n`;
       }
-      if (result.contradictingEvidence?.length > 0) {
-        markdown += `- **Contradicting Evidence:**\n`;
-        result.contradictingEvidence.forEach(e => markdown += `  - ${e}\n`);
+      markdown += `---\n\n## Peer Review Verdict\n\n`;
+      markdown += `**Verdict:** ${analysis.review.verdict}\n`;
+      markdown += `**Overall Assessment:** ${analysis.review.overallAssessment}\n`;
+      markdown += `**Citation Quality:** ${analysis.review.citationQuality}\n\n`;
+      markdown += `### Strengths\n`;
+      analysis.review.strengths.forEach(s => markdown += `- ${s}\n`);
+      markdown += `\n### Weaknesses\n`;
+      analysis.review.weaknesses.forEach(w => markdown += `- ${w}\n`);
+      markdown += `\n### Major Concerns\n`;
+      analysis.review.majorConcerns.forEach(c => markdown += `- ${c}\n`);
+      markdown += `\n### Recommendations\n`;
+      analysis.review.recommendations.forEach(r => markdown += `- ${r}\n`);
+      if (analysis.review.documentTypeNote) {
+        markdown += `\n**Note on Document Type:** ${analysis.review.documentTypeNote}\n`;
       }
-      markdown += `\n`;
-    });
+      markdown += `\n---\n\n## Detailed Claim Verification\n\n`;
+      analysis.searchResults.forEach(result => {
+        markdown += `### Claim: "${result.claim}"\n`;
+        markdown += `- **Credibility Score:** ${result.credibilityScore}\n`;
+        markdown += `- **Citation Status:** ${result.citationStatus}\n`;
+        markdown += `- **Reasoning:** ${result.reasoning}\n`;
+        if (result.supportingEvidence?.length > 0) {
+          markdown += `- **Supporting Evidence:**\n`;
+          result.supportingEvidence.forEach(e => markdown += `  - ${e}\n`);
+        }
+        if (result.contradictingEvidence?.length > 0) {
+          markdown += `- **Contradicting Evidence:**\n`;
+          result.contradictingEvidence.forEach(e => markdown += `  - ${e}\n`);
+        }
+        markdown += `\n`;
+      });
+      markdown += `\n---\n\n## Extracted Data\n\n`;
+      markdown += `### Key Claims Extracted\n`;
+      analysis.extraction.keyClaims.forEach(c => {
+        markdown += `- **Claim:** ${c.claim}\n`;
+        markdown += `  - **Requires Citation:** ${c.requiresCitation}\n`;
+        markdown += `  - **Has Citation:** ${c.hasCitation}\n`;
+        markdown += `  - **Cited As:** ${c.citationText || 'N/A'}\n`;
+      });
+      markdown += `\n### Explicit Citations Found\n`;
+      analysis.extraction.explicitCitations.forEach(c => markdown += `- ${c.text}\n`);
+      markdown += `\n### Claims Missing Citations\n`;
+      analysis.extraction.missingCitations.forEach(c => markdown += `- ${c}\n`);
+      return markdown;
+    };
 
-    markdown += `\n---\n\n## Extracted Data\n\n`;
-    markdown += `### Key Claims Extracted\n`;
-    analysis.extraction.keyClaims.forEach(c => {
-      markdown += `- **Claim:** ${c.claim}\n`;
-      markdown += `  - **Requires Citation:** ${c.requiresCitation}\n`;
-      markdown += `  - **Has Citation:** ${c.hasCitation}\n`;
-      markdown += `  - **Cited As:** ${c.citationText || 'N/A'}\n`;
-    });
+    if (format === 'pdf') {
+      const { PDFDocument, rgb, StandardFonts } = await import('pdf-lib');
+      const pdfDoc = await PDFDocument.create();
+      let page = pdfDoc.addPage();
+      const { width, height } = page.getSize();
+      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+      const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+      const fontSize = 10;
+      const margin = 50;
+      let y = height - margin;
 
-    markdown += `\n### Explicit Citations Found\n`;
-    analysis.extraction.explicitCitations.forEach(c => markdown += `- ${c.text}\n`);
+      const drawText = (text, font, size, x, y) => {
+        page.drawText(text, { x, y, font, size, color: rgb(0, 0, 0) });
+        return y - size * 1.5;
+      };
 
-    markdown += `\n### Claims Missing Citations\n`;
-    analysis.extraction.missingCitations.forEach(c => markdown += `- ${c}\n`);
-    
-    // Create and download file
-    const blob = new Blob([markdown], { type: 'text/markdown' });
+      y = drawText('Publication Citation Verification Report', boldFont, 18, margin, y);
+      y -= 20;
+
+      const markdown = generateMarkdown();
+      const lines = markdown.split('\n');
+
+      for (const line of lines) {
+        if (y < margin) {
+          page = pdfDoc.addPage();
+          y = height - margin;
+        }
+        if (line.startsWith('#')) {
+          const level = line.match(/#/g).length;
+          y = drawText(line.replace(/#/g, '').trim(), boldFont, 18 - level * 2, margin, y);
+        } else if (line.startsWith('-')) {
+          y = drawText(line, font, fontSize, margin + 10, y);
+        } else {
+          y = drawText(line, font, fontSize, margin, y);
+        }
+      }
+
+      content = await pdfDoc.save();
+      blobType = 'application/pdf';
+      fileExtension = 'pdf';
+    } else if (format === 'txt') {
+      content = generateMarkdown().replace(/#+\s/g, '').replace(/\*\*/g, '');
+      blobType = 'text/plain';
+      fileExtension = 'txt';
+    } else {
+      content = generateMarkdown();
+      blobType = 'text/markdown';
+      fileExtension = 'md';
+    }
+
+    const blob = new Blob([content], { type: blobType });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${filename}_review_${timestamp}.md`;
+    a.download = `${filename}_review_${timestamp}.${fileExtension}`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };
 
-  const downloadUsageReport = async () => {
+  const downloadUsageReport = async (format) => {
     try {
-      const response = await fetch('https://citation-verifier-backend.preggyr.workers.dev/admin/usage-report', {
-        headers: {
-          'Authorization': `Bearer ${userToken}`,
-        },
-      });
+      const response = await fetch(`https://citation-verifier-backend.preggyr.workers.dev/admin/usage-report?token=${userToken}&format=${format}`);
 
       if (!response.ok) {
         const errorData = await response.json();
@@ -253,7 +297,7 @@ const CitationVerifier = () => {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'usage-report.csv';
+      a.download = `usage-report.${format}`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -395,21 +439,41 @@ const CitationVerifier = () => {
                   <p className="text-gray-600 dark:text-neutral-content">Download a comprehensive markdown report of this analysis.</p>
                 </div>
                 <div className="flex gap-4">
-                  <button
-                    onClick={downloadReview}
-                    className="flex items-center gap-2 px-6 py-3 bg-green-600 text-white rounded-lg font-semibold hover:bg-green-700 transition-transform duration-200 transform hover:scale-105"
-                  >
-                    <Download className="w-5 h-5" />
-                    <span>Download Review</span>
-                  </button>
+                  <div className="relative inline-block text-left" onMouseEnter={() => setShowReviewDropdown(true)} onMouseLeave={() => setShowReviewDropdown(false)}>
+                    <div>
+                      <button type="button" className="flex items-center gap-2 px-6 py-3 bg-green-600 text-white rounded-lg font-semibold hover:bg-green-700 transition-transform duration-200 transform hover:scale-105">
+                        <Download className="w-5 h-5" />
+                        <span>Download Review</span>
+                      </button>
+                    </div>
+                    {showReviewDropdown && (
+                      <div className="origin-top-right absolute right-0 mt-2 w-56 rounded-md shadow-lg bg-white dark:bg-base-300 ring-1 ring-black ring-opacity-5 z-10">
+                        <div className="py-1" role="menu" aria-orientation="vertical" aria-labelledby="options-menu">
+                          <a href="#" onClick={() => downloadReview('md')} className="block px-4 py-2 text-sm text-gray-700 dark:text-neutral-content hover:bg-gray-100 dark:hover:bg-base-100" role="menuitem">Markdown (.md)</a>
+                          <a href="#" onClick={() => downloadReview('txt')} className="block px-4 py-2 text-sm text-gray-700 dark:text-neutral-content hover:bg-gray-100 dark:hover:bg-base-100" role="menuitem">Text (.txt)</a>
+                          <a href="#" onClick={() => downloadReview('pdf')} className="block px-4 py-2 text-sm text-gray-700 dark:text-neutral-content hover:bg-gray-100 dark:hover:bg-base-100" role="menuitem">PDF (.pdf)</a>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                   {isAdmin && (
-                    <button
-                      onClick={downloadUsageReport}
-                      className="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition-transform duration-200 transform hover:scale-105"
-                    >
-                      <Download className="w-5 h-5" />
-                      <span>Download Usage Report</span>
-                    </button>
+                    <div className="relative inline-block text-left" onMouseEnter={() => setShowDropdown(true)} onMouseLeave={() => setShowDropdown(false)}>
+                      <div>
+                        <button type="button" className="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition-transform duration-200 transform hover:scale-105">
+                          <Download className="w-5 h-5" />
+                          <span>Download Usage Report</span>
+                        </button>
+                      </div>
+                      {showDropdown && (
+                        <div className="origin-top-right absolute right-0 mt-2 w-56 rounded-md shadow-lg bg-white dark:bg-base-300 ring-1 ring-black ring-opacity-5 z-10">
+                          <div className="py-1" role="menu" aria-orientation="vertical" aria-labelledby="options-menu">
+                            <a href="#" onClick={() => downloadUsageReport('csv')} className="block px-4 py-2 text-sm text-gray-700 dark:text-neutral-content hover:bg-gray-100 dark:hover:bg-base-100" role="menuitem">CSV</a>
+                            <a href="#" onClick={() => downloadUsageReport('html')} className="block px-4 py-2 text-sm text-gray-700 dark:text-neutral-content hover:bg-gray-100 dark:hover:bg-base-100" role="menuitem">HTML</a>
+                            <a href="#" onClick={() => downloadUsageReport('pdf')} className="block px-4 py-2 text-sm text-gray-700 dark:text-neutral-content hover:bg-gray-100 dark:hover:bg-base-100" role="menuitem">PDF</a>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
               </div>

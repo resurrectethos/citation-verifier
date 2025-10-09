@@ -1,25 +1,22 @@
-
-let userTokens = new Map([['user1-token', { usage: 0 }], ['user2-token', { usage: 0 }]]);
-
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     if (url.pathname === '/upload-users' && request.method === 'POST') {
-      return handleUserUpload(request);
+      return handleUserUpload(request, env);
     }
 
     if (url.pathname === '/users' && request.method === 'GET') {
-      return listUsers();
+      return listUsers(env);
     }
 
     if (url.pathname === '/admin/usage-report' && request.method === 'GET') {
-      return handleUsageReport(request);
+      return handleUsageReport(request, env);
     }
 
     if (url.pathname.startsWith('/users/') && request.method === 'DELETE') {
       const token = url.pathname.split('/')[2];
-      return deleteUser(token);
+      return deleteUser(token, env);
     }
 
     if (request.method === 'GET') {
@@ -38,17 +35,17 @@ export default {
     }
 
     const { token, text } = await request.json();
+    const hashedToken = await hashToken(token);
+    const user = await env.CITATION_VERIFIER_USERS.get(hashedToken, { type: 'json' });
 
-    if (!token || !userTokens.has(token)) {
+    if (!user) {
       return new Response(JSON.stringify({ error: 'Unauthorized: Invalid token' }), {
         status: 401,
         headers: { 'Content-Type': 'application/json', ...corsHeaders },
       });
     }
 
-    const user = userTokens.get(token);
-
-    if (user.usage >= 5) {
+    if (user.analyses.length >= user.limit) {
       return new Response(JSON.stringify({ error: 'Usage limit exceeded.' }), {
         status: 429,
         headers: { 'Content-Type': 'application/json', ...corsHeaders },
@@ -56,8 +53,11 @@ export default {
     }
 
     try {
-      const analysis = await performAnalysis(text, env.DEEPSEEK_API_KEY);
-      user.usage++;
+      const { analysis, overallAssessment } = await performAnalysis(text, env.DEEPSEEK_API_KEY);
+      const articleTitle = getArticleTitle(text);
+      const wordCount = text.trim().split(/\s+/).length;
+      user.analyses.push({ articleTitle, wordCount, overallAssessment, date: new Date().toISOString() });
+      await env.CITATION_VERIFIER_USERS.put(hashedToken, JSON.stringify(user));
       return new Response(JSON.stringify({ analysis }), {
         headers: { 'Content-Type': 'application/json', ...corsHeaders },
       });
@@ -70,7 +70,7 @@ export default {
   },
 };
 
-async function handleUserUpload(request) {
+async function handleUserUpload(request, env) {
   const contentType = request.headers.get('content-type') || '';
   if (contentType.includes('multipart/form-data')) {
     const formData = await request.formData();
@@ -80,7 +80,10 @@ async function handleUserUpload(request) {
     }
     const content = await file.text();
     const newUsers = content.split(/\n|,/).map(u => u.trim()).filter(Boolean);
-    newUsers.forEach(user => userTokens.set(user, { usage: 0 }));
+    for (const user of newUsers) {
+      const hashedToken = await hashToken(user);
+      await env.CITATION_VERIFIER_USERS.put(hashedToken, JSON.stringify({ analyses: [], limit: 5, name: user }));
+    }
     return new Response(JSON.stringify({ message: `${newUsers.length} users added.` }), {
       headers: { 'Content-Type': 'application/json', ...corsHeaders },
     });
@@ -89,30 +92,33 @@ async function handleUserUpload(request) {
   }
 }
 
-function listUsers() {
-  return new Response(JSON.stringify(Object.fromEntries(userTokens)), {
+async function listUsers(env) {
+  const keys = await env.CITATION_VERIFIER_USERS.list();
+  const users = [];
+  for (const key of keys.keys) {
+    const user = await env.CITATION_VERIFIER_USERS.get(key.name, { type: 'json' });
+    users.push({ name: user.name, limit: user.limit, analyses: user.analyses.length });
+  }
+  return new Response(JSON.stringify(users), {
     headers: { 'Content-Type': 'application/json', ...corsHeaders },
   });
 }
 
-function deleteUser(token) {
-  if (userTokens.has(token)) {
-    userTokens.delete(token);
-    return new Response(JSON.stringify({ message: `User ${token} deleted.` }), {
-      headers: { 'Content-Type': 'application/json', ...corsHeaders },
-    });
-  } else {
-    return new Response(JSON.stringify({ error: 'User not found' }), {
-      status: 404,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders },
-    });
-  }
+async function deleteUser(token, env) {
+  const hashedToken = await hashToken(token);
+  await env.CITATION_VERIFIER_USERS.delete(hashedToken);
+  return new Response(JSON.stringify({ message: `User ${token} deleted.` }), {
+    headers: { 'Content-Type': 'application/json', ...corsHeaders },
+  });
 }
 
-const adminToken = 'admin-secret-token';
+const adminToken = '8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918';
 
-async function handleUsageReport(request) {
-  const providedToken = request.headers.get('Authorization')?.split(' ')?.[1];
+async function handleUsageReport(request, env) {
+  const url = new URL(request.url);
+  const format = url.searchParams.get('format') || 'csv';
+  const providedToken = url.searchParams.get('token');
+
   if (providedToken !== adminToken) {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), {
       status: 401,
@@ -120,19 +126,95 @@ async function handleUsageReport(request) {
     });
   }
 
-  let csv = 'hashed_user_token,usage_count\n';
-  for (const [token, data] of userTokens.entries()) {
-    const hashedToken = await hashToken(token);
-    csv += `${hashedToken},${data.usage}\n`;
+  let headers = { ...corsHeaders };
+  let body;
+
+  const data = [];
+  const keys = await env.CITATION_VERIFIER_USERS.list();
+  for (const key of keys.keys) {
+    const user = await env.CITATION_VERIFIER_USERS.get(key.name, { type: 'json' });
+    if (user.analyses.length > 0) {
+      user.analyses.forEach(analysis => {
+        data.push({
+          hashedToken: key.name.substring(0, 16),
+          user: user.name,
+          articleTitle: analysis.articleTitle,
+          wordCount: analysis.wordCount,
+          overallAssessment: analysis.overallAssessment,
+          date: analysis.date,
+          analysisCount: user.analyses.length > 1 ? user.analyses.length : ''
+        });
+      });
+    }
   }
 
-  return new Response(csv, {
-    headers: { 
-      'Content-Type': 'text/csv', 
-      ...corsHeaders,
-      'Content-Disposition': 'attachment; filename="usage-report.csv"',
-    },
-  });
+  switch (format) {
+    case 'html':
+      headers['Content-Type'] = 'text/html';
+      let table = '<table><tr><th>Hashed User Token</th><th>User</th><th>Article Title</th><th>Word Count</th><th>Overall Assessment</th><th>Date and Time</th><th>Count of Analysis</th></tr>';
+      for (const row of data) {
+        table += `<tr><td>${row.hashedToken}</td><td>${row.user}</td><td>${row.articleTitle}</td><td>${row.wordCount}</td><td>${row.overallAssessment}</td><td>${row.date}</td><td>${row.analysisCount}</td></tr>`;
+      }
+      table += '</table>';
+      body = `<html><body><h1>Usage Report</h1>${table}</body></html>`;
+      break;
+    case 'pdf':
+      headers['Content-Type'] = 'application/pdf';
+      headers['Content-Disposition'] = 'attachment; filename="usage-report.pdf"';
+      const { PDFDocument, rgb, PageSizes } = await import('pdf-lib');
+      const pdfDoc = await PDFDocument.create();
+      const page = pdfDoc.addPage(PageSizes.A4_Landscape);
+      const { width, height } = page.getSize();
+      const font = await pdfDoc.embedFont('Helvetica');
+      const boldFont = await pdfDoc.embedFont('Helvetica-Bold');
+      const fontSize = 10;
+      const margin = 50;
+      const tableTop = height - margin - 50;
+
+      page.drawText('Usage Report', { x: margin, y: height - margin, size: 24, font: boldFont, color: rgb(0, 0, 0) });
+
+      const pdfTable = {
+        x: margin,
+        y: tableTop,
+        width: width - 2 * margin,
+        rows: [
+          ['Hashed User Token', 'User', 'Article Title', 'Word Count', 'Overall Assessment', 'Date and Time', 'Count of Analysis'],
+          ...data.map(row => [row.hashedToken, row.user, row.articleTitle, row.wordCount.toString(), row.overallAssessment, row.date, row.analysisCount.toString()])
+        ],
+        colWidths: [120, 100, 150, 80, 100, 120, 100],
+      };
+
+      let y = pdfTable.y;
+      pdfTable.rows.forEach((row, rowIndex) => {
+        let x = pdfTable.x;
+        row.forEach((cell, colIndex) => {
+          page.drawText(cell, { x: x + 5, y: y - 15, size: fontSize, font: rowIndex === 0 ? boldFont : font, color: rgb(0, 0, 0) });
+          x += pdfTable.colWidths[colIndex];
+        });
+        y -= 20;
+        page.drawLine({ start: { x: pdfTable.x, y: y + 5 }, end: { x: pdfTable.x + pdfTable.width, y: y + 5 }, thickness: 0.5, color: rgb(0.5, 0.5, 0.5) });
+      });
+
+      body = await pdfDoc.save();
+      break;
+    default: // csv
+      headers['Content-Type'] = 'text/csv';
+      headers['Content-Disposition'] = 'attachment; filename="usage-report.csv"';
+      let csv = 'hashed_user_token,user,article_title,word_count,overall_assessment,date_and_time,count_of_analysis\n';
+      for (const row of data) {
+        csv += `${row.hashedToken},${row.user},"${row.articleTitle}",${row.wordCount},${row.overallAssessment},${row.date},${row.analysisCount}\n`;
+      }
+      body = csv;
+      break;
+  }
+
+  return new Response(body, { headers });
+}
+
+function getArticleTitle(text) {
+  const firstNLines = text.split('\n').slice(0, 10).join('\n');
+  const potentialTitles = firstNLines.split('\n').filter(line => line.trim().length > 0 && line.split(' ').length > 3 && !line.toLowerCase().includes('abstract'));
+  return potentialTitles.length > 0 ? potentialTitles[0].trim() : 'Untitled';
 }
 
 async function hashToken(token) {
@@ -223,5 +305,5 @@ YOU MUST RESPOND WITH ONLY A VALID JSON OBJECT. NO OTHER TEXT.\n\nFormat:\n{\n  
   const reviewResponse = await callDeepSeek([{ role: "user", content: reviewPrompt }], 2500);
   const review = parseJSON(reviewResponse);
 
-  return { extraction, searchResults, review };
+  return { analysis: { extraction, searchResults, review }, overallAssessment: review.overallAssessment };
 }
