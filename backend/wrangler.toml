@@ -5,6 +5,14 @@ compatibility_date = "2023-10-26"
 [vars]
 FRONTEND_URL = "https://apps.edufusionai.co.za"
 
+[[durable_objects.bindings]]
+name = "RATE_LIMITER"
+class_name = "RateLimiter"
+
+[[migrations]]
+tag = "v1-rate-limiter"
+new_classes = ["RateLimiter"]
+
 [[kv_namespaces]]
 binding = "CITATION_VERIFIER_USERS"
 id = "373e8902638a4e50a9264ef725bbb231"

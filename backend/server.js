@@ -80,51 +80,29 @@ export default {
     const authHeader = request.headers.get('Authorization')?.replace('Bearer ', '');
 
     if (authHeader) {
-      // New, secure method: Header contains the raw token, so we hash it.
       hashedToken = await hashToken(authHeader);
     } else if (body.token) {
-      // Old, fallback method: Body contains the pre-hashed token.
       hashedToken = body.token;
     } else {
-      // No token provided in either location.
+      logEvent('warn', 'Missing token in request');
       return new Response(JSON.stringify({ error: 'Unauthorized: Missing token' }), {
         status: 401,
         headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
       });
     }
 
-    const user = await env.CITATION_VERIFIER_USERS.get(hashedToken, { type: 'json' });
+    // Get the Durable Object stub for this user
+    const id = env.RATE_LIMITER.idFromName(hashedToken);
+    const stub = env.RATE_LIMITER.get(id);
 
-    if (!user) {
-      return new Response(JSON.stringify({ error: 'Unauthorized: Invalid token' }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
-      });
-    }
+    // Forward the request to the Durable Object to handle the analysis and rate limiting
+    const doRequest = new Request(request.url, {
+      method: 'POST',
+      headers: request.headers,
+      body: JSON.stringify({ hashedToken, text }),
+    });
 
-    if (user.analyses.length >= user.limit) {
-      return new Response(JSON.stringify({ error: 'Usage limit exceeded.' }), {
-        status: 429,
-        headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
-      });
-    }
-
-    try {
-      const { analysis, overallAssessment } = await performAnalysis(text, env.DEEPSEEK_API_KEY);
-      const articleTitle = getArticleTitle(text);
-      const wordCount = text.trim().split(/\s+/).length;
-      user.analyses.push({ articleTitle, wordCount, overallAssessment, date: new Date().toISOString() });
-      await env.CITATION_VERIFIER_USERS.put(hashedToken, JSON.stringify(user));
-      return new Response(JSON.stringify({ analysis }), {
-        headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
-      });
-    } catch (error) {
-      logEvent('error', 'Analysis failed with an unexpected error', { error: error.message, stack: error.stack });
-      return new Response(JSON.stringify({ error: error.message }), {
-        status: 500,
-        headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
-      });
-    }
+    return stub.fetch(doRequest);
   },
 };
 
@@ -431,10 +409,8 @@ async function performAnalysis(text, apiKey) {
   };
 
   // Step 1: Extract
-  const extractPrompt = `Analyze this academic text and extract key claims and citations.\n\nText: \"${text}\"\n\nYOU MUST RESPOND WITH ONLY A VALID JSON OBJECT. NO OTHER TEXT BEFORE OR AFTER THE JSON.\n\nFormat:\n{\n  \"keyClaims\": [\n    {\"claim\": \"text of claim\", \"requiresCitation\": true, \"hasCitation\": false, \"citationText\": \"author year or empty\"}
-  ],
-  \"explicitCitations\": [\n    {\"text\": \"citation as appears\", \"authors\": \"if identifiable\", \"year\": \"if identifiable\"}
-  ],
+  const extractPrompt = `Analyze this academic text and extract key claims and citations.\n\nText: \"${text}\"\n\nYOU MUST RESPOND WITH ONLY A VALID JSON OBJECT. NO OTHER TEXT BEFORE OR AFTER THE JSON.\n\nFormat:\n{\n  \"keyClaims\": [\n    {\"claim\": \"text of claim\", \"requiresCitation\": true, \"hasCitation\": false, \"citationText\": \"author year or empty\"}\n  ],
+  \"explicitCitations\": [\n    {\"text\": \"citation as appears\", \"authors\": \"if identifiable\", \"year\": \"if identifiable\"}\n  ],
     \"missingCitations\": [\"claim without proper citation\"],
     \"documentType\": \"full article or abstract or other\"\n}\n\nRESPOND ONLY WITH THE JSON OBJECT ABOVE. DO NOT ADD ANY EXPLANATORY TEXT.`;
   const extractResponse = await callDeepSeek([{ role: "user", content: extractPrompt }], 8000);
@@ -444,8 +420,7 @@ async function performAnalysis(text, apiKey) {
   const claimsToCheck = extraction.keyClaims.slice(0, 3);
   const searchResults = [];
   for (const claim of claimsToCheck) {
-    const searchPrompt = `Assess the credibility and verifiability of this claim from an academic publication: \"${claim.claim}\"\n\n${claim.citationText ? `The claim cites: ${claim.citationText}` : 'No citation provided for this claim.'}\n\nYOU MUST RESPOND WITH ONLY A VALID JSON OBJECT. NO OTHER TEXT.\n\nFormat:\n{\n  \"claim\": \"${claim.claim}\",\n  \"credibilityScore\": \"high or medium or low\",\n  \"supportingEvidence\": [\"brief point 1\", \"brief point 2\"],
-  \"contradictingEvidence\": [\"brief point if found\"],
+    const searchPrompt = `Assess the credibility and verifiability of this claim from an academic publication: \"${claim.claim}\"\n\n${claim.citationText ? `The claim cites: ${claim.citationText}` : 'No citation provided for this claim.'}\n\nYOU MUST RESPOND WITH ONLY A VALID JSON OBJECT. NO OTHER TEXT.\n\nFormat:\n{\n  \"claim\": \"${claim.claim}\",\n  \"credibilityScore\": \"high or medium or low\",\n  \"supportingEvidence\": [\"brief point 1\", \"brief point 2\"],\n  \"contradictingEvidence\": [\"brief point if found\"],
   \"retractionsFound\": false,\n  \"reasoning\": \"one sentence explanation\",\n  \"citationStatus\": \"properly cited or missing citation or questionable citation\"\n}\n\nRESPOND ONLY WITH THE JSON OBJECT. NO ADDITIONAL TEXT.`;
     const searchResponse = await callDeepSeek([{ role: "user", content: searchPrompt }], 1500);
     const deepSeekResult = parseJSON(searchResponse);
@@ -458,14 +433,11 @@ async function performAnalysis(text, apiKey) {
 
   // Step 3: Review
   const reviewPrompt = `You are a critical peer reviewer. Review this academic text based on the analysis below.\n\nDocument Type: ${extraction.documentType}\nKey Claims: ${JSON.stringify(extraction.keyClaims)}
-ExplicitCitations: ${JSON.stringify(extraction.explicitCitations)}
+Explicit Citations: ${JSON.stringify(extraction.explicitCitations)}
 Missing Citations: ${JSON.stringify(extraction.missingCitations)}
 Credibility Results: ${JSON.stringify(searchResults)}
 
-YOU MUST RESPOND WITH ONLY A VALID JSON OBJECT. NO OTHER TEXT.\n\nFormat:\n{\n  \"overallAssessment\": \"high quality or medium quality or low quality\",\n  \"strengths\": [\"strength 1\", \"strength 2\"],
-  \"weaknesses\": [\"weakness 1\", \"weakness 2\"],
-  \"citationQuality\": \"one sentence assessment\",
-  \"majorConcerns\": [\"concern 1\", \"concern 2\"],
+YOU MUST RESPOND WITH ONLY A VALID JSON OBJECT. NO OTHER TEXT.\n\nFormat:\n{\n  \"overallAssessment\": \"high quality or medium quality or low quality\",\n  \"strengths\": [\"strength 1\", \"strength 2\"],\n  \"weaknesses\": [\"weakness 1\", \"weakness 2\"],\n  \"citationQuality\": \"one sentence assessment\",\n  \"majorConcerns\": [\"concern 1\", \"concern 2\"],
   \"recommendations\": [\"recommendation 1\", \"recommendation 2\"],
   \"verdict\": \"accept or minor revisions or major revisions or reject\",
   \"documentTypeNote\": \"note about limitations if abstract only\"\n}\n\nRESPOND ONLY WITH THE JSON OBJECT. NO ADDITIONAL TEXT BEFORE OR AFTER.`;
@@ -473,4 +445,58 @@ YOU MUST RESPOND WITH ONLY A VALID JSON OBJECT. NO OTHER TEXT.\n\nFormat:\n{\n  
   const review = parseJSON(reviewResponse);
 
   return { analysis: { extraction, searchResults, review }, overallAssessment: review.overallAssessment };
+}
+
+export class RateLimiter {
+  constructor(state, env) {
+    this.state = state;
+    this.env = env;
+  }
+
+  async fetch(request) {
+    // This method now contains the core analysis logic, ensuring that
+    // requests for a single user are processed serially, preventing race conditions.
+    try {
+      const { hashedToken, text } = await request.json();
+
+      logEvent('info', 'Rate limiter DO received request', { hashedToken: hashedToken.substring(0, 10), textLength: text?.length || 0 });
+
+      const user = await this.env.CITATION_VERIFIER_USERS.get(hashedToken, { type: 'json' });
+
+      if (!user) {
+        logEvent('warn', 'User not found in DO', { hashedToken: hashedToken.substring(0, 10) });
+        return new Response(JSON.stringify({ error: 'Unauthorized: Invalid token' }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, this.env) },
+        });
+      }
+
+      if (user.analyses.length >= user.limit) {
+        logEvent('warn', 'Usage limit exceeded for user', { hashedToken: hashedToken.substring(0, 10), limit: user.limit });
+        return new Response(JSON.stringify({ error: 'Usage limit exceeded.' }), {
+          status: 429,
+          headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, this.env) },
+        });
+      }
+
+      const { analysis, overallAssessment } = await performAnalysis(text, this.env.DEEPSEEK_API_KEY);
+      const articleTitle = getArticleTitle(text);
+      const wordCount = text.trim().split(/\s+/).length;
+      
+      user.analyses.push({ articleTitle, wordCount, overallAssessment, date: new Date().toISOString() });
+      await this.env.CITATION_VERIFIER_USERS.put(hashedToken, JSON.stringify(user));
+      
+      logEvent('info', 'Analysis successful', { hashedToken: hashedToken.substring(0, 10) });
+
+      return new Response(JSON.stringify({ analysis }), {
+        headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, this.env) },
+      });
+    } catch (error) {
+      logEvent('error', 'Analysis failed inside DO', { error: error.message, stack: error.stack });
+      return new Response(JSON.stringify({ error: error.message }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, this.env) },
+      });
+    }
+  }
 }
