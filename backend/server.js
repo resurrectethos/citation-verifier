@@ -381,7 +381,8 @@ async function performAnalysis(text, apiKey) {
         max_tokens: maxTokens,
         temperature: 0.1,
         stream: false
-      })
+      }),
+      signal: AbortSignal.timeout(30000) // 30-second timeout
     });
     if (!response.ok) throw new Error(`DeepSeek API request failed: ${response.status}`);
     const data = await response.json();
