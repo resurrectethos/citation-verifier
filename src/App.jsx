@@ -396,7 +396,7 @@ const CitationVerifier = () => {
           <button
             onClick={analyzeText}
             disabled={loading || !text.trim() || !userToken || wordCount > 8500}
-            className="w-full bg-primary text-white py-3 px-6 rounded-lg font-semibold hover:bg-primary/90 disabled:bg-gray-400 dark:disabled:bg-base-300 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-transform duration-200 transform hover:scale-105"
+            className="w-full bg-primary text-black py-3 px-6 rounded-lg font-semibold hover:bg-primary/90 disabled:bg-gray-400 dark:disabled:bg-base-300 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-transform duration-200 transform hover:scale-105"
           >
             {loading ? (
               <>
@@ -441,7 +441,7 @@ const CitationVerifier = () => {
                 <div className="flex gap-4">
                   <div className="relative inline-block text-left" onMouseEnter={() => setShowReviewDropdown(true)} onMouseLeave={() => setShowReviewDropdown(false)}>
                     <div>
-                      <button type="button" className="flex items-center gap-2 px-6 py-3 bg-green-600 text-white rounded-lg font-semibold hover:bg-green-700 transition-transform duration-200 transform hover:scale-105">
+                      <button type="button" className="flex items-center gap-2 px-6 py-3 bg-green-600 text-black rounded-lg font-semibold hover:bg-green-700 transition-transform duration-200 transform hover:scale-105">
                         <Download className="w-5 h-5" />
                         <span>Download Review</span>
                       </button>
@@ -553,6 +553,24 @@ const CitationVerifier = () => {
                     </div>
                     <p className="text-sm text-gray-600 dark:text-neutral-content mt-2">{result.reasoning}</p>
                     {result.retractionsFound && <p className="text-sm font-bold text-red-600 dark:text-red-400 mt-2">Retractions Found</p>}
+                    
+                    {result.semanticScholar && result.semanticScholar.length > 0 && (
+                      <div className="mt-4 border-t border-gray-200 dark:border-base-300 pt-4">
+                        <h4 className="font-semibold text-md text-gray-700 dark:text-neutral-content mb-2">Semantic Scholar Results:</h4>
+                        <ul className="space-y-2">
+                          {result.semanticScholar.map(paper => (
+                            <li key={paper.paperId}>
+                              <a href={`https://www.semanticscholar.org/paper/${paper.paperId}`} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline text-sm">
+                                {paper.title}
+                              </a>
+                              <p className="text-xs text-gray-500 dark:text-neutral-content mt-1">
+                                {paper.authors.map(a => a.name).join(', ')} ({paper.year}) - {paper.citationCount} citations
+                              </p>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
