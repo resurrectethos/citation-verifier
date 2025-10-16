@@ -62,9 +62,13 @@ export default {
     const body = await request.json();
     const text = body.text;
 
+    // Log the start of the analysis request
+    logEvent('info', 'Analysis request received', { textLength: text?.length || 0, origin: request.headers.get('Origin') });
+
     try {
       validateAnalysisRequest({ text });
     } catch (e) {
+      logEvent('warn', 'Invalid analysis request', { error: e.message });
       return new Response(JSON.stringify({ error: e.message }), {
         status: 400,
         headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
@@ -115,6 +119,7 @@ export default {
         headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
       });
     } catch (error) {
+      logEvent('error', 'Analysis failed with an unexpected error', { error: error.message, stack: error.stack });
       return new Response(JSON.stringify({ error: error.message }), {
         status: 500,
         headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
@@ -329,6 +334,16 @@ async function hashToken(token) {
   return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+function logEvent(level, message, context = {}) {
+  // In a real production app, you might integrate with a logging service here.
+  console.log(JSON.stringify({
+    timestamp: new Date().toISOString(),
+    level,
+    message,
+    ...context
+  }));
+}
+
 function getCorsHeaders(request, env) {
   const origin = request.headers.get('Origin');
   // Define allowed origins, with a fallback for the environment variable
@@ -376,7 +391,7 @@ const querySemanticScholar = async (claim) => {
     const data = await response.json();
     return data.data || [];
   } catch (error) {
-    console.error('Semantic Scholar query failed:', error);
+    logEvent('error', 'Semantic Scholar query failed', { error: error.message, stack: error.stack });
     return [];
   }
 };
