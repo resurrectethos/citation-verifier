@@ -23,19 +23,19 @@ export default {
       if (providedToken !== adminToken) {
         return new Response(JSON.stringify({ error: 'Unauthorized' }), {
           status: 401,
-          headers: { 'Content-Type': 'application/json', ...corsHeaders },
+          headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
         });
       }
       const textToHash = new URL(request.url).searchParams.get('text');
       if (!textToHash) {
         return new Response(JSON.stringify({ error: 'Missing text' }), {
           status: 400,
-          headers: { 'Content-Type': 'application/json', ...corsHeaders },
+          headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
         });
       }
       const hash = await hashToken(textToHash);
       return new Response(JSON.stringify({ text: textToHash, hash: hash }), {
-        headers: { 'Content-Type': 'application/json', ...corsHeaders },
+        headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
       });
     }
 
@@ -47,12 +47,12 @@ export default {
     if (request.method === 'GET') {
       return new Response(JSON.stringify({ message: 'This is the backend for the Citation Verifier application. Please use the frontend to access the service.' }), {
         status: 200,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders },
+        headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
       });
     }
 
     if (request.method === 'OPTIONS') {
-      return handleOptions(request);
+      return handleOptions(request, env);
     }
 
     if (request.method !== 'POST') {
@@ -67,7 +67,7 @@ export default {
     } catch (e) {
       return new Response(JSON.stringify({ error: e.message }), {
         status: 400,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders },
+        headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
       });
     }
 
@@ -85,7 +85,7 @@ export default {
       // No token provided in either location.
       return new Response(JSON.stringify({ error: 'Unauthorized: Missing token' }), {
         status: 401,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders },
+        headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
       });
     }
 
@@ -94,14 +94,14 @@ export default {
     if (!user) {
       return new Response(JSON.stringify({ error: 'Unauthorized: Invalid token' }), {
         status: 401,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders },
+        headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
       });
     }
 
     if (user.analyses.length >= user.limit) {
       return new Response(JSON.stringify({ error: 'Usage limit exceeded.' }), {
         status: 429,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders },
+        headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
       });
     }
 
@@ -112,12 +112,12 @@ export default {
       user.analyses.push({ articleTitle, wordCount, overallAssessment, date: new Date().toISOString() });
       await env.CITATION_VERIFIER_USERS.put(hashedToken, JSON.stringify(user));
       return new Response(JSON.stringify({ analysis }), {
-        headers: { 'Content-Type': 'application/json', ...corsHeaders },
+        headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
       });
     } catch (error) {
       return new Response(JSON.stringify({ error: error.message }), {
         status: 500,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders },
+        headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
       });
     }
   },
@@ -138,7 +138,7 @@ async function handleUserUpload(request, env) {
       await env.CITATION_VERIFIER_USERS.put(hashedToken, JSON.stringify({ analyses: [], limit: 5, name: user }));
     }
     return new Response(JSON.stringify({ message: `${newUsers.length} users added.` }), {
-      headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
     });
   } else {
     return new Response(JSON.stringify({ error: 'Invalid content type' }), { status: 400 });
@@ -153,7 +153,7 @@ async function listUsers(env) {
     users.push({ name: user.name, limit: user.limit, analyses: user.analyses.length });
   }
   return new Response(JSON.stringify(users), {
-    headers: { 'Content-Type': 'application/json', ...corsHeaders },
+    headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
   });
 }
 
@@ -161,7 +161,7 @@ async function deleteUser(token, env) {
   const hashedToken = await hashToken(token);
   await env.CITATION_VERIFIER_USERS.delete(hashedToken);
   return new Response(JSON.stringify({ message: `User ${token} deleted.` }), {
-    headers: { 'Content-Type': 'application/json', ...corsHeaders },
+    headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
   });
 }
 
@@ -175,11 +175,11 @@ async function handleUsageReport(request, env) {
   if (providedToken !== adminToken) {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), {
       status: 401,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
     });
   }
 
-  let headers = { ...corsHeaders };
+  let headers = { ...getCorsHeaders(request, env) };
   let body;
 
   const data = [];
@@ -269,7 +269,7 @@ async function updateUserLimit(request, env) {
   if (providedToken !== adminToken) {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), {
       status: 401,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
     });
   }
 
@@ -277,7 +277,7 @@ async function updateUserLimit(request, env) {
   if (!user || !limit) {
     return new Response(JSON.stringify({ error: 'Missing user or limit' }), {
       status: 400,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
     });
   }
 
@@ -287,7 +287,7 @@ async function updateUserLimit(request, env) {
   if (!userData) {
     return new Response(JSON.stringify({ error: 'User not found' }), {
       status: 404,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
     });
   }
 
@@ -295,7 +295,7 @@ async function updateUserLimit(request, env) {
   await env.CITATION_VERIFIER_USERS.put(hashedToken, JSON.stringify(userData));
 
   return new Response(JSON.stringify({ message: `User ${user} limit updated to ${limit}` }), {
-    headers: { 'Content-Type': 'application/json', ...corsHeaders },
+    headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
   });
 }
 
@@ -329,19 +329,33 @@ async function hashToken(token) {
   return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': 'https://apps.edufusionai.co.za',
-  'Vary': 'Origin',
-  'Access-Control-Allow-Methods': 'POST, GET, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-};
+function getCorsHeaders(request, env) {
+  const origin = request.headers.get('Origin');
+  // Define allowed origins, with a fallback for the environment variable
+  const allowedOrigins = [
+    env.FRONTEND_URL || 'https://apps.edufusionai.co.za',
+    'http://localhost:5173',
+    'http://127.0.0.1:5173'
+  ];
 
-function handleOptions(request) {
-  if (
-    request.headers.get('Origin') !== null &&
-    request.headers.get('Access-Control-Request-Method') !== null &&
-    request.headers.get('Access-Control-Request-Headers') !== null
-  ) {
+  if (origin && allowedOrigins.includes(origin)) {
+    return {
+      'Access-Control-Allow-Origin': origin,
+      'Vary': 'Origin',
+      'Access-Control-Allow-Methods': 'POST, GET, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    };
+  }
+
+  // Return minimal headers if origin is not allowed
+  return { 'Vary': 'Origin' };
+}
+
+// The static corsHeaders object is replaced by the dynamic getCorsHeaders function.
+
+function handleOptions(request, env) {
+  const corsHeaders = getCorsHeaders(request, env);
+  if (corsHeaders['Access-Control-Allow-Origin']) {
     return new Response(null, {
       headers: corsHeaders,
     });
@@ -402,7 +416,10 @@ async function performAnalysis(text, apiKey) {
   };
 
   // Step 1: Extract
-  const extractPrompt = `Analyze this academic text and extract key claims and citations.\n\nText: \"${text}\"\n\nYOU MUST RESPOND WITH ONLY A VALID JSON OBJECT. NO OTHER TEXT BEFORE OR AFTER THE JSON.\n\nFormat:\n{\n  \"keyClaims\": [\n    {\"claim\": \"text of claim\", \"requiresCitation\": true, \"hasCitation\": false, \"citationText\": \"author year or empty\"}\n  ],\n  \"explicitCitations\": [\n    {\"text\": \"citation as appears\", \"authors\": \"if identifiable\", \"year\": \"if identifiable\"}\n  ],
+  const extractPrompt = `Analyze this academic text and extract key claims and citations.\n\nText: \"${text}\"\n\nYOU MUST RESPOND WITH ONLY A VALID JSON OBJECT. NO OTHER TEXT BEFORE OR AFTER THE JSON.\n\nFormat:\n{\n  \"keyClaims\": [\n    {\"claim\": \"text of claim\", \"requiresCitation\": true, \"hasCitation\": false, \"citationText\": \"author year or empty\"}
+  ],
+  \"explicitCitations\": [\n    {\"text\": \"citation as appears\", \"authors\": \"if identifiable\", \"year\": \"if identifiable\"}
+  ],
     \"missingCitations\": [\"claim without proper citation\"],
     \"documentType\": \"full article or abstract or other\"\n}\n\nRESPOND ONLY WITH THE JSON OBJECT ABOVE. DO NOT ADD ANY EXPLANATORY TEXT.`;
   const extractResponse = await callDeepSeek([{ role: "user", content: extractPrompt }], 8000);
@@ -412,7 +429,9 @@ async function performAnalysis(text, apiKey) {
   const claimsToCheck = extraction.keyClaims.slice(0, 3);
   const searchResults = [];
   for (const claim of claimsToCheck) {
-    const searchPrompt = `Assess the credibility and verifiability of this claim from an academic publication: \"${claim.claim}\"\n\n${claim.citationText ? `The claim cites: ${claim.citationText}` : 'No citation provided for this claim.'}\n\nYOU MUST RESPOND WITH ONLY A VALID JSON OBJECT. NO OTHER TEXT.\n\nFormat:\n{\n  \"claim\": \"${claim.claim}\",\n  \"credibilityScore\": \"high or medium or low\",\n  \"supportingEvidence\": [\"brief point 1\", \"brief point 2\"],\n  \"contradictingEvidence\": [\"brief point if found\"],\n  \"retractionsFound\": false,\n  \"reasoning\": \"one sentence explanation\",\n  \"citationStatus\": \"properly cited or missing citation or questionable citation\"\n}\n\nRESPOND ONLY WITH THE JSON OBJECT. NO ADDITIONAL TEXT.`;
+    const searchPrompt = `Assess the credibility and verifiability of this claim from an academic publication: \"${claim.claim}\"\n\n${claim.citationText ? `The claim cites: ${claim.citationText}` : 'No citation provided for this claim.'}\n\nYOU MUST RESPOND WITH ONLY A VALID JSON OBJECT. NO OTHER TEXT.\n\nFormat:\n{\n  \"claim\": \"${claim.claim}\",\n  \"credibilityScore\": \"high or medium or low\",\n  \"supportingEvidence\": [\"brief point 1\", \"brief point 2\"],
+  \"contradictingEvidence\": [\"brief point if found\"],
+  \"retractionsFound\": false,\n  \"reasoning\": \"one sentence explanation\",\n  \"citationStatus\": \"properly cited or missing citation or questionable citation\"\n}\n\nRESPOND ONLY WITH THE JSON OBJECT. NO ADDITIONAL TEXT.`;
     const searchResponse = await callDeepSeek([{ role: "user", content: searchPrompt }], 1500);
     const deepSeekResult = parseJSON(searchResponse);
     const semanticScholarResults = await querySemanticScholar(claim.claim);
@@ -423,7 +442,18 @@ async function performAnalysis(text, apiKey) {
   }
 
   // Step 3: Review
-  const reviewPrompt = `You are a critical peer reviewer. Review this academic text based on the analysis below.\n\nDocument Type: ${extraction.documentType}\nKey Claims: ${JSON.stringify(extraction.keyClaims)}\nExplicit Citations: ${JSON.stringify(extraction.explicitCitations)}\nMissing Citations: ${JSON.stringify(extraction.missingCitations)}\nCredibility Results: ${JSON.stringify(searchResults)}\n\nYOU MUST RESPOND WITH ONLY A VALID JSON OBJECT. NO OTHER TEXT.\n\nFormat:\n{\n  \"overallAssessment\": \"high quality or medium quality or low quality\",\n  \"strengths\": [\"strength 1\", \"strength 2\"],\n  \"weaknesses\": [\"weakness 1\", \"weakness 2\"],\n  \"citationQuality\": \"one sentence assessment\",\n  \"majorConcerns\": [\"concern 1\", \"concern 2\"],\n  \"recommendations\": [\"recommendation 1\", \"recommendation 2\"],\n  \"verdict\": \"accept or minor revisions or major revisions or reject\",\n  \"documentTypeNote\": \"note about limitations if abstract only\"\n}\n\nRESPOND ONLY WITH THE JSON OBJECT. NO ADDITIONAL TEXT BEFORE OR AFTER.`;
+  const reviewPrompt = `You are a critical peer reviewer. Review this academic text based on the analysis below.\n\nDocument Type: ${extraction.documentType}\nKey Claims: ${JSON.stringify(extraction.keyClaims)}
+ExplicitCitations: ${JSON.stringify(extraction.explicitCitations)}
+Missing Citations: ${JSON.stringify(extraction.missingCitations)}
+Credibility Results: ${JSON.stringify(searchResults)}
+
+YOU MUST RESPOND WITH ONLY A VALID JSON OBJECT. NO OTHER TEXT.\n\nFormat:\n{\n  \"overallAssessment\": \"high quality or medium quality or low quality\",\n  \"strengths\": [\"strength 1\", \"strength 2\"],
+  \"weaknesses\": [\"weakness 1\", \"weakness 2\"],
+  \"citationQuality\": \"one sentence assessment\",
+  \"majorConcerns\": [\"concern 1\", \"concern 2\"],
+  \"recommendations\": [\"recommendation 1\", \"recommendation 2\"],
+  \"verdict\": \"accept or minor revisions or major revisions or reject\",
+  \"documentTypeNote\": \"note about limitations if abstract only\"\n}\n\nRESPOND ONLY WITH THE JSON OBJECT. NO ADDITIONAL TEXT BEFORE OR AFTER.`;
   const reviewResponse = await callDeepSeek([{ role: "user", content: reviewPrompt }], 2500);
   const review = parseJSON(reviewResponse);
 

@@ -2,6 +2,9 @@ name = "citation-verifier-backend"
 main = "server.js"
 compatibility_date = "2023-10-26"
 
+[vars]
+FRONTEND_URL = "https://apps.edufusionai.co.za"
+
 [[kv_namespaces]]
 binding = "CITATION_VERIFIER_USERS"
 id = "373e8902638a4e50a9264ef725bbb231"
