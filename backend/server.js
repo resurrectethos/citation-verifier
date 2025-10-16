@@ -361,6 +361,53 @@ function handleOptions(request, env) {
   }
 }
 
+class CircuitBreaker {
+  // NOTE: This is an in-memory circuit breaker. In a high-traffic, multi-instance
+  // environment, a distributed circuit breaker using KV store or a Durable Object
+  // would be required for global state.
+  constructor(threshold = 5, timeout = 60000) {
+    this.failureCount = 0;
+    this.threshold = threshold;
+    this.timeout = timeout;
+    this.state = 'CLOSED'; // CLOSED, OPEN, HALF_OPEN
+    this.nextAttempt = Date.now();
+  }
+  
+  async call(fn) {
+    if (this.state === 'OPEN') {
+      if (Date.now() < this.nextAttempt) {
+        throw new Error('Circuit breaker is OPEN');
+      }
+      this.state = 'HALF_OPEN';
+    }
+    
+    try {
+      const result = await fn();
+      this.onSuccess();
+      return result;
+    } catch (error) {
+      this.onFailure();
+      throw error;
+    }
+  }
+  
+  onSuccess() {
+    this.failureCount = 0;
+    this.state = 'CLOSED';
+  }
+  
+  onFailure() {
+    this.failureCount++;
+    if (this.failureCount >= this.threshold) {
+      this.state = 'OPEN';
+      this.nextAttempt = Date.now() + this.timeout;
+      logEvent('error', 'Circuit breaker OPEN for DeepSeek API');
+    }
+  }
+}
+
+const deepSeekCircuitBreaker = new CircuitBreaker();
+
 const querySemanticScholar = async (claim) => {
   try {
     const response = await fetch(
@@ -376,24 +423,29 @@ const querySemanticScholar = async (claim) => {
 
 async function performAnalysis(text, apiKey) {
   const callDeepSeek = async (messages, maxTokens = 8000) => {
-    const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model: "deepseek-chat",
-        messages: messages,
-        max_tokens: maxTokens,
-        temperature: 0.1,
-        stream: false
-      }),
-      signal: AbortSignal.timeout(30000) // 30-second timeout
+    return deepSeekCircuitBreaker.call(async () => {
+      const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model: "deepseek-chat",
+          messages: messages,
+          max_tokens: maxTokens,
+          temperature: 0.1,
+          stream: false
+        }),
+        signal: AbortSignal.timeout(30000) // 30-second timeout
+      });
+      if (!response.ok) {
+        // Throw an error to make the circuit breaker track the failure
+        throw new Error(`DeepSeek API request failed: ${response.status}`);
+      }
+      const data = await response.json();
+      return data.choices[0].message.content;
     });
-    if (!response.ok) throw new Error(`DeepSeek API request failed: ${response.status}`);
-    const data = await response.json();
-    return data.choices[0].message.content;
   };
 
   const parseJSON = (text) => {
