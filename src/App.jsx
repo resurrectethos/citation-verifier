@@ -116,8 +116,9 @@ const CitationVerifier = () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': `Bearer ${userToken}`,
         },
-        body: JSON.stringify({ token: userToken, text: text }),
+        body: JSON.stringify({ text: text }),
       });
 
       if (!response.ok) {
