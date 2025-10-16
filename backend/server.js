@@ -20,6 +20,12 @@ export default {
         const token = url.pathname.split('/')[3];
         return deleteUser(token, env);
       }
+      if (url.pathname === '/admin/usage-report' && request.method === 'GET') {
+        return handleUsageReport(request, env);
+      }
+      if (url.pathname === '/admin/update-limit' && request.method === 'POST') {
+        return updateUserLimit(request, env);
+      }
     }
 
     // The /upload-users route has been moved to /admin/upload-users and is now protected.
@@ -28,13 +34,7 @@ export default {
       return listUsers(env);
     }
 
-    if (url.pathname === '/admin/usage-report' && request.method === 'GET') {
-      return handleUsageReport(request, env);
-    }
-
-    if (url.pathname === '/admin/update-limit' && request.method === 'POST') {
-      return updateUserLimit(request, env);
-    }
+    // These routes have been moved into the main admin block.
 
     if (url.pathname === '/admin/hash' && request.method === 'GET') {
       // The admin check is now handled by the centralized router.
