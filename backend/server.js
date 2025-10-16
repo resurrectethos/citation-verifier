@@ -322,6 +322,19 @@ function logEvent(level, message, context = {}) {
   }));
 }
 
+function errorResponse(message, code, status = 400, request, env) {
+  return new Response(JSON.stringify({
+    error: {
+      message,
+      code,
+      timestamp: new Date().toISOString()
+    }
+  }), {
+    status,
+    headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) }
+  });
+}
+
 function getCorsHeaders(request, env) {
   const origin = request.headers.get('Origin');
   // Define allowed origins, with a fallback for the environment variable
@@ -506,29 +519,31 @@ export class RateLimiter {
   }
 
   async fetch(request) {
-    // This method now contains the core analysis logic, ensuring that
-    // requests for a single user are processed serially, preventing race conditions.
+    let hashedToken; // Define here to be accessible in catch block
     try {
-      const { hashedToken, text } = await request.json();
+      const body = await request.json();
+      hashedToken = body.hashedToken;
+      const text = body.text;
 
-      logEvent('info', 'Rate limiter DO received request', { hashedToken: hashedToken.substring(0, 10), textLength: text?.length || 0 });
+      logEvent('info', 'Rate limiter DO received request', { hashedToken: hashedToken?.substring(0, 10), textLength: text?.length || 0 });
 
-      const user = await this.env.CITATION_VERIFIER_USERS.get(hashedToken, { type: 'json' });
+      // Use durable storage as the primary source of truth (cache)
+      let user = await this.state.storage.get('user');
 
       if (!user) {
-        logEvent('warn', 'User not found in DO', { hashedToken: hashedToken.substring(0, 10) });
-        return new Response(JSON.stringify({ error: 'Unauthorized: Invalid token' }), {
-          status: 401,
-          headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, this.env) },
-        });
+        logEvent('info', 'User cache miss in DO, loading from KV', { hashedToken: hashedToken?.substring(0, 10) });
+        const kvUser = await this.env.CITATION_VERIFIER_USERS.get(hashedToken, { type: 'json' });
+        if (!kvUser) {
+          logEvent('warn', 'User not found in KV', { hashedToken: hashedToken?.substring(0, 10) });
+          return errorResponse('Unauthorized: Invalid token', 'INVALID_TOKEN', 401, request, this.env);
+        }
+        user = kvUser;
+        await this.state.storage.put('user', user);
       }
 
       if (user.analyses.length >= user.limit) {
-        logEvent('warn', 'Usage limit exceeded for user', { hashedToken: hashedToken.substring(0, 10), limit: user.limit });
-        return new Response(JSON.stringify({ error: 'Usage limit exceeded.' }), {
-          status: 429,
-          headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, this.env) },
-        });
+        logEvent('warn', 'Usage limit exceeded for user', { hashedToken: hashedToken?.substring(0, 10), limit: user.limit });
+        return errorResponse('Usage limit exceeded.', 'LIMIT_EXCEEDED', 429, request, this.env);
       }
 
       const { analysis, overallAssessment } = await performAnalysis(text, this.env.DEEPSEEK_API_KEY);
@@ -536,19 +551,24 @@ export class RateLimiter {
       const wordCount = text.trim().split(/\s+/).length;
       
       user.analyses.push({ articleTitle, wordCount, overallAssessment, date: new Date().toISOString() });
-      await this.env.CITATION_VERIFIER_USERS.put(hashedToken, JSON.stringify(user));
       
-      logEvent('info', 'Analysis successful', { hashedToken: hashedToken.substring(0, 10) });
+      await Promise.all([
+        this.state.storage.put('user', user),
+        this.env.CITATION_VERIFIER_USERS.put(hashedToken, JSON.stringify(user))
+      ]);
+      
+      logEvent('info', 'Analysis successful', { hashedToken: hashedToken?.substring(0, 10) });
 
       return new Response(JSON.stringify({ analysis }), {
         headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, this.env) },
       });
     } catch (error) {
-      logEvent('error', 'Analysis failed inside DO', { error: error.message, stack: error.stack });
-      return new Response(JSON.stringify({ error: error.message }), {
-        status: 500,
-        headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, this.env) },
+      logEvent('error', 'Analysis failed inside DO', { 
+        error: error.message, 
+        stack: error.stack,
+        hashedToken: hashedToken?.substring(0, 10) + '...' // Log prefix only
       });
+      return errorResponse('Analysis failed. Please try again.', 'ANALYSIS_FAILED', 500, request, this.env);
     }
   }
 }
