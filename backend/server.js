@@ -61,6 +61,16 @@ export default {
 
     const body = await request.json();
     const text = body.text;
+
+    try {
+      validateAnalysisRequest({ text });
+    } catch (e) {
+      return new Response(JSON.stringify({ error: e.message }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      });
+    }
+
     let hashedToken;
 
     const authHeader = request.headers.get('Authorization')?.replace('Bearer ', '');
@@ -287,6 +297,23 @@ async function updateUserLimit(request, env) {
   return new Response(JSON.stringify({ message: `User ${user} limit updated to ${limit}` }), {
     headers: { 'Content-Type': 'application/json', ...corsHeaders },
   });
+}
+
+function validateAnalysisRequest(data) {
+  const errors = [];
+  if (!data.text || typeof data.text !== 'string') {
+    errors.push('Text for analysis is required and must be a string.');
+  } else {
+    if (data.text.length < 10) {
+      errors.push('Text must be at least 10 characters long.');
+    }
+    if (data.text.length > 50000) {
+      errors.push('Text must not exceed 50,000 characters.');
+    }
+  }
+  if (errors.length > 0) {
+    throw new Error(errors.join(' '));
+  }
 }
 
 function getArticleTitle(text) {
