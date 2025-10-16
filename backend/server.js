@@ -59,8 +59,26 @@ export default {
       return new Response('Method Not Allowed', { status: 405 });
     }
 
-    const { token, text } = await request.json();
-    const hashedToken = token;
+    const body = await request.json();
+    const text = body.text;
+    let hashedToken;
+
+    const authHeader = request.headers.get('Authorization')?.replace('Bearer ', '');
+
+    if (authHeader) {
+      // New, secure method: Header contains the raw token, so we hash it.
+      hashedToken = await hashToken(authHeader);
+    } else if (body.token) {
+      // Old, fallback method: Body contains the pre-hashed token.
+      hashedToken = body.token;
+    } else {
+      // No token provided in either location.
+      return new Response(JSON.stringify({ error: 'Unauthorized: Missing token' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      });
+    }
+
     const user = await env.CITATION_VERIFIER_USERS.get(hashedToken, { type: 'json' });
 
     if (!user) {
