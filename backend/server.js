@@ -8,11 +8,21 @@ export default {
         logEvent('warn', 'Admin access denied', { path: url.pathname, origin: request.headers.get('Origin') });
         return new Response('Forbidden', { status: 403 });
       }
+      
+      // Handle specific admin routes after the check
+      if (url.pathname === '/admin/users' && request.method === 'GET') {
+        return listUsers(env);
+      }
+      if (url.pathname === '/admin/upload-users' && request.method === 'POST') {
+        return handleUserUpload(request, env);
+      }
+      if (url.pathname.startsWith('/admin/users/') && request.method === 'DELETE') {
+        const token = url.pathname.split('/')[3];
+        return deleteUser(token, env);
+      }
     }
 
-    if (url.pathname === '/upload-users' && request.method === 'POST') {
-      return handleUserUpload(request, env);
-    }
+    // The /upload-users route has been moved to /admin/upload-users and is now protected.
 
     if (url.pathname === '/users' && request.method === 'GET') {
       return listUsers(env);
@@ -41,10 +51,7 @@ export default {
       });
     }
 
-    if (url.pathname.startsWith('/users/') && request.method === 'DELETE') {
-      const token = url.pathname.split('/')[2];
-      return deleteUser(token, env);
-    }
+    // The delete user route has been moved to /admin/users/:token and is now protected.
 
     if (request.method === 'GET') {
       return new Response(JSON.stringify({ message: 'This is the backend for the Citation Verifier application. Please use the frontend to access the service.' }), {
