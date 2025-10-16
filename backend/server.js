@@ -2,6 +2,14 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
+    // Centralized admin route protection
+    if (url.pathname.startsWith('/admin/')) {
+      if (!isAdmin(request, env)) {
+        logEvent('warn', 'Admin access denied', { path: url.pathname, origin: request.headers.get('Origin') });
+        return new Response('Forbidden', { status: 403 });
+      }
+    }
+
     if (url.pathname === '/upload-users' && request.method === 'POST') {
       return handleUserUpload(request, env);
     }
@@ -19,13 +27,7 @@ export default {
     }
 
     if (url.pathname === '/admin/hash' && request.method === 'GET') {
-      const providedToken = new URL(request.url).searchParams.get('token');
-      if (providedToken !== adminToken) {
-        return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-          status: 401,
-          headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
-        });
-      }
+      // The admin check is now handled by the centralized router.
       const textToHash = new URL(request.url).searchParams.get('text');
       if (!textToHash) {
         return new Response(JSON.stringify({ error: 'Missing text' }), {
@@ -148,19 +150,23 @@ async function deleteUser(token, env) {
   });
 }
 
-const adminToken = '8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918';
+function isAdmin(request, env) {
+  const adminSecret = request.headers.get('X-Admin-Token');
+  // A basic timing-safe comparison to prevent timing attacks.
+  if (!adminSecret || !env.ADMIN_SECRET || adminSecret.length !== env.ADMIN_SECRET.length) {
+    return false;
+  }
+  let mismatch = 0;
+  for (let i = 0; i < adminSecret.length; ++i) {
+    mismatch |= adminSecret.charCodeAt(i) ^ env.ADMIN_SECRET.charCodeAt(i);
+  }
+  return mismatch === 0;
+}
 
 async function handleUsageReport(request, env) {
   const url = new URL(request.url);
   const format = url.searchParams.get('format') || 'csv';
-  const providedToken = url.searchParams.get('token');
-
-  if (providedToken !== adminToken) {
-    return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-      status: 401,
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
-    });
-  }
+  // The admin check is now handled by the centralized router.
 
   let headers = { ...getCorsHeaders(request, env) };
   let body;
@@ -248,13 +254,7 @@ async function handleUsageReport(request, env) {
 }
 
 async function updateUserLimit(request, env) {
-  const providedToken = new URL(request.url).searchParams.get('token');
-  if (providedToken !== adminToken) {
-    return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-      status: 401,
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
-    });
-  }
+  // The admin check is now handled by the centralized router.
 
   const { user, limit } = await request.json();
   if (!user || !limit) {

@@ -4,6 +4,7 @@ compatibility_date = "2023-10-26"
 
 [vars]
 FRONTEND_URL = "https://apps.edufusionai.co.za"
+ADMIN_SECRET = "replace-this-with-a-real-secret"
 
 [[durable_objects.bindings]]
 name = "RATE_LIMITER"
