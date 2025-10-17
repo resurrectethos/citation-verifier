@@ -11,7 +11,7 @@ export default {
       
       // Handle specific admin routes after the check
       if (url.pathname === '/admin/users' && request.method === 'GET') {
-        return listUsers(env);
+        return listUsers(request, env);
       }
       if (url.pathname === '/admin/upload-users' && request.method === 'POST') {
         return handleUserUpload(request, env);
@@ -31,7 +31,7 @@ export default {
     // The /upload-users route has been moved to /admin/upload-users and is now protected.
 
     if (url.pathname === '/users' && request.method === 'GET') {
-      return listUsers(env);
+      return listUsers(request, env);
     }
 
     // These routes have been moved into the main admin block.
@@ -137,7 +137,7 @@ async function handleUserUpload(request, env) {
   }
 }
 
-async function listUsers(env) {
+async function listUsers(request, env) {
   const keys = await env.CITATION_VERIFIER_USERS.list();
   const users = [];
   for (const key of keys.keys) {
@@ -356,7 +356,7 @@ function getCorsHeaders(request, env) {
       'Access-Control-Allow-Origin': origin,
       'Vary': 'Origin',
       'Access-Control-Allow-Methods': 'POST, GET, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Admin-Token',
     };
   }
 
@@ -368,17 +368,9 @@ function getCorsHeaders(request, env) {
 
 function handleOptions(request, env) {
   const corsHeaders = getCorsHeaders(request, env);
-  if (corsHeaders['Access-Control-Allow-Origin']) {
-    return new Response(null, {
-      headers: corsHeaders,
-    });
-  } else {
-    return new Response(null, {
-      headers: {
-        Allow: 'POST, GET, DELETE, OPTIONS',
-      },
-    });
-  }
+  return new Response(null, {
+    headers: corsHeaders,
+  });
 }
 
 class CircuitBreaker {
