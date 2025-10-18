@@ -4,15 +4,15 @@ compatibility_date = "2023-10-26"
 
 [vars]
 FRONTEND_URL = "https://apps.edufusionai.co.za"
-ADMIN_SECRET = "replace-this-with-a-real-secret"
+ADMIN_SECRET = "8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918"
 
 [[durable_objects.bindings]]
 name = "RATE_LIMITER"
 class_name = "RateLimiter"
 
 [[migrations]]
-tag = "v1-rate-limiter"
-new_classes = ["RateLimiter"]
+tag = "v1"
+new_sqlite_classes = ["RateLimiter"]
 
 [[kv_namespaces]]
 binding = "CITATION_VERIFIER_USERS"
