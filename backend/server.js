@@ -1,3 +1,5 @@
+
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -66,6 +68,14 @@ export default {
 
     if (request.method === 'OPTIONS') {
       return handleOptions(request, env);
+    }
+
+    if (request.method === 'DELETE') {
+      const body = await request.json();
+      const hashedToken = body.hashedToken;
+      const id = env.RATE_LIMITER.idFromName(hashedToken);
+      const stub = env.RATE_LIMITER.get(id);
+      return stub.fetch(request);
     }
 
     if (request.method !== 'POST') {
@@ -158,6 +168,7 @@ async function createUser(request, env) {
     
     // Generate a secure token
     const token = crypto.randomUUID();
+    const hashedToken = await hashToken(token);
     
     // Create user object
     const userData = {
@@ -168,7 +179,7 @@ async function createUser(request, env) {
     };
     
     // Store in KV
-    await env.CITATION_VERIFIER_USERS.put(token, JSON.stringify(userData));
+    await env.CITATION_VERIFIER_USERS.put(hashedToken, JSON.stringify(userData));
     
     logEvent('info', 'User created', { email, token: token.substring(0, 8) });
     
@@ -198,7 +209,6 @@ async function listUsers(env) {
       if (userData) {
         const parsed = JSON.parse(userData);
         users.push({
-          token: key.name,
           email: parsed.email,
           limit: parsed.limit,
           usageCount: parsed.analyses?.length || 0,
@@ -219,14 +229,15 @@ async function listUsers(env) {
 
 async function deleteUser(token, env) {
   try {
+    const hashedToken = await hashToken(token);
     // Check if user exists
-    const userData = await env.CITATION_VERIFIER_USERS.get(token);
+    const userData = await env.CITATION_VERIFIER_USERS.get(hashedToken);
     if (!userData) {
       return errorResponse('User not found', 'USER_NOT_FOUND', 404);
     }
     
     // Delete from KV
-    await env.CITATION_VERIFIER_USERS.delete(token);
+    await env.CITATION_VERIFIER_USERS.delete(hashedToken);
     
     logEvent('info', 'User deleted', { token: token.substring(0, 8) });
     
@@ -468,9 +479,6 @@ function handleOptions(request, env) {
 }
 
 class CircuitBreaker {
-  // NOTE: This is an in-memory circuit breaker. In a high-traffic, multi-instance
-  // environment, a distributed circuit breaker using KV store or a Durable Object
-  // would be required for global state.
   constructor(threshold = 5, timeout = 60000) {
     this.failureCount = 0;
     this.threshold = threshold;
@@ -482,7 +490,9 @@ class CircuitBreaker {
   async call(fn) {
     if (this.state === 'OPEN') {
       if (Date.now() < this.nextAttempt) {
-        throw new Error('Circuit breaker is OPEN');
+        const error = new Error('Circuit breaker is OPEN - service temporarily unavailable');
+        error.code = 'CIRCUIT_BREAKER_OPEN';
+        throw error;
       }
       this.state = 'HALF_OPEN';
     }
@@ -493,7 +503,15 @@ class CircuitBreaker {
       return result;
     } catch (error) {
       this.onFailure();
-      throw error;
+      
+      // ✅ ADD CONTEXT TO ERROR
+      logEvent('error', 'Circuit breaker caught error', {
+        errorMessage: error.message,
+        state: this.state,
+        failures: this.failureCount
+      });
+      
+      throw error; // Re-throw with original error
     }
   }
   
@@ -527,33 +545,59 @@ const querySemanticScholar = async (claim) => {
   }
 };
 
-async function performAnalysis(text, apiKey) {
-  const callDeepSeek = async (messages, maxTokens = 8000) => {
-    return deepSeekCircuitBreaker.call(async () => {
-      const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({
-          model: "deepseek-chat",
-          messages: messages,
-          max_tokens: maxTokens,
-          temperature: 0.1,
-          stream: false
-        }),
-        signal: AbortSignal.timeout(30000) // 30-second timeout
-      });
-      if (!response.ok) {
-        // Throw an error to make the circuit breaker track the failure
-        throw new Error(`DeepSeek API request failed: ${response.status}`);
-      }
-      const data = await response.json();
-      return data.choices[0].message.content;
+async function callDeepSeek(messages, apiKey) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000);
+  
+  try {
+    logEvent('info', 'Making DeepSeek API request', {
+      hasApiKey: !!apiKey
     });
-  };
+    
+    const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'deepseek-chat',
+        messages: messages,
+        temperature: 0.7
+      }),
+      signal: controller.signal
+    });
+    
+    clearTimeout(timeoutId);
+    
+    if (!response.ok) {
+      const errorBody = await response.text();
+      logEvent('error', 'DeepSeek API error', {
+        status: response.status,
+        statusText: response.statusText,
+        body: errorBody
+      });
+      
+      throw new Error(`DeepSeek API error: ${response.status} - ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    logEvent('info', 'DeepSeek API response received');
+    
+    return data.choices[0].message.content;
+    
+  } catch (error) {
+    clearTimeout(timeoutId);
+    
+    if (error.name === 'AbortError') {
+      throw new Error('DeepSeek API timeout after 30 seconds');
+    }
+    
+    throw error;
+  }
+}
 
+async function performAnalysis(text, apiKey) {
   const parseJSON = (text) => {
     let cleaned = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
     const start = cleaned.indexOf('{');
@@ -567,13 +611,12 @@ async function performAnalysis(text, apiKey) {
   };
 
   // Step 1: Extract
-  const extractPrompt = `Analyze this academic text and extract key claims and citations.\n\nText: \"${text}\"\n\nYOU MUST RESPOND WITH ONLY A VALID JSON OBJECT. NO OTHER TEXT BEFORE OR AFTER THE JSON.\n\nFormat:\n{\n  \"keyClaims\": [\n    {\"claim\": \"text of claim\", \"requiresCitation\": true, \"hasCitation\": false, \"citationText\": \"author year or empty\"}
-  ],
+  const extractPrompt = `Analyze this academic text and extract key claims and citations.\n\nText: \"${text}\"\n\nYOU MUST RESPOND WITH ONLY A VALID JSON OBJECT. NO OTHER TEXT BEFORE OR AFTER THE JSON.\n\nFormat:\n{\n  \"keyClaims\": [\n    {\"claim\": \"text of claim\", \"requiresCitation\": true, \"hasCitation\": false, \"citationText\": \"author year or empty\"}\n  ],
   \"explicitCitations\": [\n    {\"text\": \"citation as appears\", \"authors\": \"if identifiable\", \"year\": \"if identifiable\"}
   ],
     \"missingCitations\": [\"claim without proper citation\"],
     \"documentType\": \"full article or abstract or other\"\n}\n\nRESPOND ONLY WITH THE JSON OBJECT ABOVE. DO NOT ADD ANY EXPLANATORY TEXT.`;
-  const extractResponse = await callDeepSeek([{ role: "user", content: extractPrompt }], 8000);
+  const extractResponse = await callDeepSeek([{ role: "user", content: extractPrompt }], apiKey);
   const extraction = parseJSON(extractResponse);
 
   // Step 2: Search
@@ -582,8 +625,9 @@ async function performAnalysis(text, apiKey) {
   for (const claim of claimsToCheck) {
     const searchPrompt = `Assess the credibility and verifiability of this claim from an academic publication: \"${claim.claim}\"\n\n${claim.citationText ? `The claim cites: ${claim.citationText}` : 'No citation provided for this claim.'}\n\nYOU MUST RESPOND WITH ONLY A VALID JSON OBJECT. NO OTHER TEXT.\n\nFormat:\n{\n  \"claim\": \"${claim.claim}\",\n  \"credibilityScore\": \"high or medium or low\",\n  \"supportingEvidence\": [\"brief point 1\", \"brief point 2\"],
   \"contradictingEvidence\": [\"brief point if found\"],
-  \"retractionsFound\": false,\n  \"reasoning\": \"one sentence explanation\",\n  \"citationStatus\": \"properly cited or missing citation or questionable citation\"\n}\n\nRESPOND ONLY WITH THE JSON OBJECT. NO ADDITIONAL TEXT.`;
-    const searchResponse = await callDeepSeek([{ role: "user", content: searchPrompt }], 1500);
+  \"retractionsFound\": false,\n  \"reasoning\": \"one sentence explanation\",
+  \"citationStatus\": \"properly cited or missing citation or questionable citation\"\n}\n\nRESPOND ONLY WITH THE JSON OBJECT. NO ADDITIONAL TEXT.`;
+    const searchResponse = await callDeepSeek([{ role: "user", content: searchPrompt }], apiKey);
     const deepSeekResult = parseJSON(searchResponse);
     const semanticScholarResults = await querySemanticScholar(claim.claim);
     
@@ -593,7 +637,8 @@ async function performAnalysis(text, apiKey) {
   }
 
   // Step 3: Review
-  const reviewPrompt = `You are a critical peer reviewer. Review this academic text based on the analysis below.\n\nDocument Type: ${extraction.documentType}\nKey Claims: ${JSON.stringify(extraction.keyClaims)}
+  const reviewPrompt = `You are a critical peer reviewer. Review this academic text based on the analysis below.\n\nDocument Type: ${extraction.documentType}
+Key Claims: ${JSON.stringify(extraction.keyClaims)}
 Explicit Citations: ${JSON.stringify(extraction.explicitCitations)}
 Missing Citations: ${JSON.stringify(extraction.missingCitations)}
 Credibility Results: ${JSON.stringify(searchResults)}
@@ -605,7 +650,7 @@ YOU MUST RESPOND WITH ONLY A VALID JSON OBJECT. NO OTHER TEXT.\n\nFormat:\n{\n  
   \"recommendations\": [\"recommendation 1\", \"recommendation 2\"],
   \"verdict\": \"accept or minor revisions or major revisions or reject\",
   \"documentTypeNote\": \"note about limitations if abstract only\"\n}\n\nRESPOND ONLY WITH THE JSON OBJECT. NO ADDITIONAL TEXT BEFORE OR AFTER.`;
-  const reviewResponse = await callDeepSeek([{ role: "user", content: reviewPrompt }], 2500);
+  const reviewResponse = await callDeepSeek([{ role: "user", content: reviewPrompt }], apiKey);
   const review = parseJSON(reviewResponse);
 
   return { analysis: { extraction, searchResults, review }, overallAssessment: review.overallAssessment };
@@ -618,6 +663,11 @@ export class RateLimiter {
   }
 
   async fetch(request) {
+    if (request.method === 'DELETE') {
+      await this.state.storage.delete('user');
+      return new Response('Cache cleared');
+    }
+
     let hashedToken; // Define here to be accessible in catch block
     try {
       const body = await request.json();
@@ -626,18 +676,11 @@ export class RateLimiter {
 
       logEvent('info', 'Rate limiter DO received request', { hashedToken: hashedToken?.substring(0, 10), textLength: text?.length || 0 });
 
-      // Use durable storage as the primary source of truth (cache)
-      let user = await this.state.storage.get('user');
-
+      // Always fetch the user from KV
+      const user = await this.env.CITATION_VERIFIER_USERS.get(hashedToken, { type: 'json' });
       if (!user) {
-        logEvent('info', 'User cache miss in DO, loading from KV', { hashedToken: hashedToken?.substring(0, 10) });
-        const kvUser = await this.env.CITATION_VERIFIER_USERS.get(hashedToken, { type: 'json' });
-        if (!kvUser) {
-          logEvent('warn', 'User not found in KV', { hashedToken: hashedToken?.substring(0, 10) });
-          return errorResponse('Unauthorized: Invalid token', 'INVALID_TOKEN', 401, request, this.env);
-        }
-        user = kvUser;
-        await this.state.storage.put('user', user);
+        logEvent('warn', 'User not found in KV', { hashedToken: hashedToken?.substring(0, 10) });
+        return errorResponse('Unauthorized: Invalid token', 'INVALID_TOKEN', 401, request, this.env);
       }
 
       if (user.analyses.length >= user.limit) {
@@ -651,10 +694,7 @@ export class RateLimiter {
       
       user.analyses.push({ articleTitle, wordCount, overallAssessment, date: new Date().toISOString() });
       
-      await Promise.all([
-        this.state.storage.put('user', user),
-        this.env.CITATION_VERIFIER_USERS.put(hashedToken, JSON.stringify(user))
-      ]);
+      await this.env.CITATION_VERIFIER_USERS.put(hashedToken, JSON.stringify(user));
       
       logEvent('info', 'Analysis successful', { hashedToken: hashedToken?.substring(0, 10) });
 
@@ -662,12 +702,20 @@ export class RateLimiter {
         headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, this.env) },
       });
     } catch (error) {
-      logEvent('error', 'Analysis failed inside DO', { 
-        error: error.message, 
-        stack: error.stack,
-        hashedToken: hashedToken?.substring(0, 10) + '...' // Log prefix only
+      // ✅ ADD DETAILED LOGGING
+      logEvent('error', 'Analysis failed in DO', {
+        errorMessage: error.message,
+        errorName: error.name,
+        errorStack: error.stack,
+        textLength: text.length
       });
-      return errorResponse('Analysis failed. Please try again.', 'ANALYSIS_FAILED', 500, request, this.env);
+      
+      // ✅ RETURN PROPER ERROR MESSAGE
+      return errorResponse(
+        error.message || 'Analysis failed due to an unknown error',
+        'ANALYSIS_FAILED',
+        500
+      );
     }
   }
 }

@@ -2,6 +2,12 @@ name = "citation-verifier-backend"
 main = "server.js"
 compatibility_date = "2023-10-26"
 
+[observability]
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+
 [vars]
 FRONTEND_URL = "https://apps.edufusionai.co.za"
 ADMIN_SECRET = "8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918"
