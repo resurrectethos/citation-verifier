@@ -66,6 +66,12 @@ The backend is deployed to Cloudflare Workers. To deploy the backend, run the fo
 wrangler deploy
 ```
 
+### 2.4. External Services
+
+The backend uses the following external services:
+
+*   **DeepSeek API:** The DeepSeek API is used for the core text analysis functionality. You need to provide a `DEEPSEEK_API_KEY` environment variable in your `wrangler.toml` file to use this service.
+
 ---
 
 ## 3. API Reference
