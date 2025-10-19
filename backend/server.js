@@ -1,405 +1,492 @@
-
+import TokenManager from './tokenManager.js';
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-
-    // Admin authentication
-    if (url.pathname.startsWith('/admin/')) {
-      const adminToken = request.headers.get('X-Admin-Token');
-      if (adminToken !== env.ADMIN_SECRET) {
-        return new Response('Forbidden', { status: 403 });
-      }
-      
-      // List users
-      if (url.pathname === '/admin/users' && request.method === 'GET') {
-        return await listUsers(env);
-      }
-      
-      // Create user
-      if (url.pathname === '/admin/users' && request.method === 'POST') {
-        return await createUser(request, env);
-      }
-      
-      // Delete user
-      if (url.pathname.match(/^\/admin\/users\/[^\/]+$/) && request.method === 'DELETE') {
-        const token = url.pathname.split('/').pop();
-        return await deleteUser(token, env);
-      }
-    }
-
-    if (url.pathname === '/admin/upload-users' && request.method === 'POST') {
-        return handleUserUpload(request, env);
-    }
-
-    if (url.pathname === '/users' && request.method === 'GET') {
-      return listUsers(env);
-    }
-
-    if (url.pathname === '/admin/usage-report' && request.method === 'GET') {
-      return handleUsageReport(request, env);
-    }
-
-    if (url.pathname === '/admin/update-limit' && request.method === 'POST') {
-      return updateUserLimit(request, env);
-    }
-
-    if (url.pathname === '/admin/hash' && request.method === 'GET') {
-      // The admin check is now handled by the centralized router.
-      const textToHash = new URL(request.url).searchParams.get('text');
-      if (!textToHash) {
-        return new Response(JSON.stringify({ error: 'Missing text' }), {
-          status: 400,
-          headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
-        });
-      }
-      const hash = await hashToken(textToHash);
-      return new Response(JSON.stringify({ text: textToHash, hash: hash }), {
-        headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
-      });
-    }
-
-    if (request.method === 'GET') {
-      return new Response(JSON.stringify({ message: 'This is the backend for the Citation Verifier application. Please use the frontend to access the service.' }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
-      });
-    }
-
+    
+    // CORS preflight
     if (request.method === 'OPTIONS') {
-      return handleOptions(request, env);
+      return new Response(null, {
+        headers: getCorsHeaders(request, env)
+      });
     }
-
-    if (request.method === 'DELETE') {
-      const body = await request.json();
-      const hashedToken = body.hashedToken;
-      const id = env.RATE_LIMITER.idFromName(hashedToken);
-      const stub = env.RATE_LIMITER.get(id);
-      return stub.fetch(request);
-    }
-
-    if (request.method !== 'POST') {
-      return new Response('Method Not Allowed', { status: 405 });
-    }
-
-    const body = await request.json();
-    const text = body.text;
-
-    // Log the start of the analysis request
-    logEvent('info', 'Analysis request received', { textLength: text?.length || 0, origin: request.headers.get('Origin') });
-
+    
     try {
-      validateAnalysisRequest({ text });
-    } catch (e) {
-      logEvent('warn', 'Invalid analysis request', { error: e.message });
-      return new Response(JSON.stringify({ error: e.message }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
+      // Admin routes
+      if (url.pathname.startsWith('/admin/')) {
+        const adminToken = request.headers.get('X-Admin-Token');
+        if (adminToken !== env.ADMIN_SECRET) {
+          return new Response(JSON.stringify({
+            error: {
+              message: 'Invalid admin credentials',
+              code: 'FORBIDDEN'
+            }
+          }), {
+            status: 403,
+            headers: {
+              'Content-Type': 'application/json',
+              ...getCorsHeaders(request, env)
+            }
+          });
+        }
+        
+        // POST /admin/users - Create user
+        if (url.pathname === '/admin/users' && request.method === 'POST') {
+          return await createUser(request, env);
+        }
+        
+        // GET /admin/users - List all users
+        if (url.pathname === '/admin/users' && request.method === 'GET') {
+          return await listUsers(request, env);
+        }
+        
+        // GET /admin/users/:token - Get single user
+        if (url.pathname.match(/^\/admin\/users\/[^\/]+$/) && request.method === 'GET') {
+          const token = url.pathname.split('/').pop();
+          return await getUser(token, request, env);
+        }
+        
+        // PUT /admin/users/:token - Update user
+        if (url.pathname.match(/^\/admin\/users\/[^\/]+$/) && request.method === 'PUT') {
+          const token = url.pathname.split('/').pop();
+          return await updateUser(token, request, env);
+        }
+        
+        // DELETE /admin/users/:token - Delete user
+        if (url.pathname.match(/^\/admin\/users\/[^\/]+$/) && request.method === 'DELETE') {
+          const token = url.pathname.split('/').pop();
+          return await deleteUser(token, request, env);
+        }
+      }
+      
+      // Analysis endpoint
+      if (url.pathname === '/' && request.method === 'POST') {
+        // Validate token
+        const validation = await validateToken(request, env);
+        
+        if (!validation.valid) {
+          // Return the detailed error response
+          const response = validation.error;
+          response.headers.set(...Object.entries(getCorsHeaders(request, env)));
+          return response;
+        }
+        
+        // Forward to Durable Object
+        const id = env.RATE_LIMITER.idFromName(validation.token);
+        const stub = env.RATE_LIMITER.get(id);
+
+        const doRequest = new Request(request.url, request);
+        doRequest.headers.set('X-Worker-Token', validation.token);
+
+        return await stub.fetch(doRequest);
+      }
+      
+      // 404 for unknown routes
+      return errorResponse('Not found', 'NOT_FOUND', 404, request, env);
+      
+    } catch (error) {
+      logEvent('error', 'Request handler error', {
+        error: error.message,
+        stack: error.stack,
+        path: url.pathname
       });
+      
+      return errorResponse(
+        'Internal server error',
+        'INTERNAL_ERROR',
+        500,
+        request,
+        env
+      );
     }
-
-    let hashedToken;
-
-    const authHeader = request.headers.get('Authorization')?.replace('Bearer ', '');
-
-    if (authHeader) {
-      hashedToken = await hashToken(authHeader);
-    } else if (body.token) {
-      hashedToken = body.token;
-    } else {
-      logEvent('warn', 'Missing token in request');
-      return new Response(JSON.stringify({ error: 'Unauthorized: Missing token' }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
-      });
-    }
-
-    // Get the Durable Object stub for this user
-    const id = env.RATE_LIMITER.idFromName(hashedToken);
-    const stub = env.RATE_LIMITER.get(id);
-
-    // Forward the request to the Durable Object to handle the analysis and rate limiting
-    const doRequest = new Request(request.url, {
-      method: 'POST',
-      headers: request.headers,
-      body: JSON.stringify({ hashedToken, text }),
-    });
-
-    return stub.fetch(doRequest);
-  },
+  }
 };
 
-async function handleUserUpload(request, env) {
-  const contentType = request.headers.get('content-type') || '';
-  if (contentType.includes('multipart/form-data')) {
-    const formData = await request.formData();
-    const file = formData.get('userFile');
-    if (!file) {
-      return new Response(JSON.stringify({ error: 'File not provided' }), { status: 400 });
+/**
+ * Validate user token and return user data
+ */
+async function validateToken(request, env) {
+  try {
+    // Extract token from Authorization header
+    const authHeader = request.headers.get('Authorization');
+    
+    if (!authHeader) {
+      return {
+        valid: false,
+        error: errorResponse(
+          'Missing Authorization header. Please include your access token.',
+          'MISSING_TOKEN',
+          401,
+          request,
+          env
+        )
+      };
     }
-    const content = await file.text();
-    const rows = content.split('\n').map(row => row.trim()).filter(Boolean);
-    // Skip header row
-    const users = rows.slice(1); 
-    let count = 0;
-    for (const user of users) {
-      const [email, token] = user.split(',').map(item => item.trim());
-      if (email && token) {
-        const hashedToken = await hashToken(token);
-        await env.CITATION_VERIFIER_USERS.put(hashedToken, JSON.stringify({ analyses: [], limit: 5, name: email }));
-        count++;
-      }
+    
+    if (!authHeader.startsWith('Bearer ')) {
+      return {
+        valid: false,
+        error: errorResponse(
+          'Invalid Authorization format. Use: Bearer YOUR_TOKEN',
+          'INVALID_AUTH_FORMAT',
+          401,
+          request,
+          env
+        )
+      };
     }
-    return new Response(JSON.stringify({ message: `${count} users added or updated.` }), {
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
+    
+    const token = authHeader.replace('Bearer ', '').trim();
+    
+    // Validate token format
+    const formatCheck = TokenManager.isValidFormat(token);
+    if (!formatCheck.valid) {
+      return {
+        valid: false,
+        error: errorResponse(
+          `Invalid token format: ${formatCheck.reason}`,
+          'INVALID_TOKEN_FORMAT',
+          401,
+          request,
+          env
+        )
+      };
+    }
+    
+    // Get user from KV
+    const userDataStr = await env.CITATION_VERIFIER_USERS.get(token);
+    
+    if (!userDataStr) {
+      return {
+        valid: false,
+        error: errorResponse(
+          'Token not found. Please check your access token or contact support.',
+          'TOKEN_NOT_FOUND',
+          401,
+          request,
+          env
+        )
+      };
+    }
+    
+    const userData = JSON.parse(userDataStr);
+    
+    // Validate user status and limits
+    const userCheck = TokenManager.validateUser(userData, token);
+    if (!userCheck.valid) {
+      return {
+        valid: false,
+        error: errorResponse(
+          userCheck.reason,
+          userCheck.code,
+          userCheck.code === 'LIMIT_EXCEEDED' ? 429 : 403,
+          request,
+          env
+        )
+      };
+    }
+    
+    return {
+      valid: true,
+      token,
+      userData
+    };
+    
+  } catch (error) {
+    logEvent('error', 'Token validation failed', {
+      error: error.message,
+      stack: error.stack
     });
-  } else {
-    return new Response(JSON.stringify({ error: 'Invalid content type' }), { status: 400 });
+    
+    return {
+      valid: false,
+      error: errorResponse(
+        'Token validation failed. Please try again.',
+        'VALIDATION_ERROR',
+        500,
+        request,
+        env
+      )
+    };
   }
 }
 
+/**
+ * CREATE USER - POST /admin/users
+ */
 async function createUser(request, env) {
   try {
     const { email, limit = 5 } = await request.json();
     
-    if (!email) {
-      return errorResponse('Email is required', 'MISSING_EMAIL', 400);
+    // Validate input
+    if (!email || !email.includes('@')) {
+      return errorResponse('Valid email is required', 'INVALID_EMAIL', 400, request, env);
     }
     
-    // Generate a secure token
-    const token = crypto.randomUUID();
-    const hashedToken = await hashToken(token);
+    if (limit < 1 || limit > 1000) {
+      return errorResponse('Limit must be between 1 and 1000', 'INVALID_LIMIT', 400, request, env);
+    }
+    
+    // Generate token
+    const token = TokenManager.generateToken();
     
     // Create user object
-    const userData = {
-      email,
-      limit,
-      analyses: [],
-      createdAt: new Date().toISOString()
-    };
+    const userData = TokenManager.createUser(email, limit);
     
     // Store in KV
-    await env.CITATION_VERIFIER_USERS.put(hashedToken, JSON.stringify(userData));
+    await env.CITATION_VERIFIER_USERS.put(token, JSON.stringify(userData));
     
-    logEvent('info', 'User created', { email, token: token.substring(0, 8) });
+    // Log creation
+    logEvent('info', 'User created', {
+      email,
+      token: token.substring(0, 20) + '...', 
+      limit
+    });
     
+    // Return token to admin
     return new Response(JSON.stringify({
       success: true,
       token,
       email,
-      limit
+      limit,
+      message: 'User created successfully'
     }), {
       status: 201,
       headers: { 'Content-Type': 'application/json' }
     });
     
   } catch (error) {
-    logEvent('error', 'Failed to create user', { error: error.message });
-    return errorResponse('Failed to create user', 'CREATE_USER_FAILED', 500);
+    logEvent('error', 'Failed to create user', {
+      error: error.message,
+      stack: error.stack
+    });
+    return errorResponse(
+      `Failed to create user: ${error.message}`,
+      'CREATE_USER_FAILED',
+      500,
+      request,
+      env
+    );
   }
 }
 
-async function listUsers(env) {
+/**
+ * LIST USERS - GET /admin/users
+ */
+async function listUsers(request, env) {
   try {
     const users = [];
-    const list = await env.CITATION_VERIFIER_USERS.list();
     
-    for (const key of list.keys) {
-      const userData = await env.CITATION_VERIFIER_USERS.get(key.name);
-      if (userData) {
-        const parsed = JSON.parse(userData);
-        users.push({
-          email: parsed.email,
-          limit: parsed.limit,
-          usageCount: parsed.analyses?.length || 0,
-          createdAt: parsed.createdAt
-        });
+    // Get all keys from KV
+    let cursor = undefined;
+    do {
+      const list = await env.CITATION_VERIFIER_USERS.list({ cursor });
+      
+      for (const key of list.keys) {
+        try {
+          const userData = await env.CITATION_VERIFIER_USERS.get(key.name);
+          if (userData) {
+            const parsed = JSON.parse(userData);
+            users.push({
+              token: key.name,
+              email: parsed.email,
+              limit: parsed.limit,
+              used: parsed.analyses?.length || 0,
+              remaining: parsed.limit - (parsed.analyses?.length || 0),
+              status: parsed.status || 'active',
+              createdAt: parsed.createdAt,
+              lastUsed: parsed.lastUsed
+            });
+          }
+        } catch (e) {
+          logEvent('warn', 'Failed to parse user data', {
+            token: key.name.substring(0, 20),
+            error: e.message
+          });
+        }
       }
-    }
+      
+      cursor = list.cursor;
+    } while (cursor);
     
-    return new Response(JSON.stringify({ users }), {
-      headers: { 'Content-Type': 'application/json' }
-    });
-    
-  } catch (error) {
-    logEvent('error', 'Failed to list users', { error: error.message });
-    return errorResponse('Failed to list users', 'LIST_USERS_FAILED', 500);
-  }
-}
-
-async function deleteUser(token, env) {
-  try {
-    const hashedToken = await hashToken(token);
-    // Check if user exists
-    const userData = await env.CITATION_VERIFIER_USERS.get(hashedToken);
-    if (!userData) {
-      return errorResponse('User not found', 'USER_NOT_FOUND', 404);
-    }
-    
-    // Delete from KV
-    await env.CITATION_VERIFIER_USERS.delete(hashedToken);
-    
-    logEvent('info', 'User deleted', { token: token.substring(0, 8) });
+    // Sort by creation date (newest first)
+    users.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
     
     return new Response(JSON.stringify({
       success: true,
-      message: 'User deleted'
+      count: users.length,
+      users
     }), {
       headers: { 'Content-Type': 'application/json' }
     });
     
   } catch (error) {
-    logEvent('error', 'Failed to delete user', { error: error.message });
-    return errorResponse('Failed to delete user', 'DELETE_USER_FAILED', 500);
-  }
-}
-
-function isAdmin(request, env) {
-  const adminSecret = request.headers.get('X-Admin-Token');
-  // A basic timing-safe comparison to prevent timing attacks.
-  if (!adminSecret || !env.ADMIN_SECRET || adminSecret.length !== env.ADMIN_SECRET.length) {
-    return false;
-  }
-  let mismatch = 0;
-  for (let i = 0; i < adminSecret.length; ++i) {
-    mismatch |= adminSecret.charCodeAt(i) ^ env.ADMIN_SECRET.charCodeAt(i);
-  }
-  return mismatch === 0;
-}
-
-async function handleUsageReport(request, env) {
-  const url = new URL(request.url);
-  const format = url.searchParams.get('format') || 'csv';
-  // The admin check is now handled by the centralized router.
-
-  let headers = { ...getCorsHeaders(request, env) };
-  let body;
-
-  const data = [];
-  const keys = await env.CITATION_VERIFIER_USERS.list();
-  for (const key of keys.keys) {
-    const user = await env.CITATION_VERIFIER_USERS.get(key.name, { type: 'json' });
-    if (user.analyses.length > 0) {
-      user.analyses.forEach(analysis => {
-        data.push({
-          hashedToken: key.name.substring(0, 16),
-          user: user.name,
-          articleTitle: analysis.articleTitle,
-          wordCount: analysis.wordCount,
-          overallAssessment: analysis.overallAssessment,
-          date: analysis.date,
-          analysisCount: user.analyses.length > 1 ? user.analyses.length : ''
-        });
-      });
-    }
-  }
-
-  switch (format) {
-    case 'html':
-      headers['Content-Type'] = 'text/html';
-      let table = '<table><tr><th>Hashed User Token</th><th>User</th><th>Article Title</th><th>Word Count</th><th>Overall Assessment</th><th>Date and Time</th><th>Count of Analysis</th></tr>';
-      for (const row of data) {
-        table += `<tr><td>${row.hashedToken}</td><td>${row.user}</td><td>${row.articleTitle}</td><td>${row.wordCount}</td><td>${row.overallAssessment}</td><td>${row.date}</td><td>${row.analysisCount}</td></tr>`;
-      }
-      table += '</table>';
-      body = `<html><body><h1>Usage Report</h1>${table}</body></html>`;
-      break;
-    case 'pdf':
-      headers['Content-Type'] = 'application/pdf';
-      headers['Content-Disposition'] = 'attachment; filename="usage-report.pdf"';
-      const { PDFDocument, rgb, PageSizes } = await import('pdf-lib');
-      const pdfDoc = await PDFDocument.create();
-      const page = pdfDoc.addPage(PageSizes.A4_Landscape);
-      const { width, height } = page.getSize();
-      const font = await pdfDoc.embedFont('Helvetica');
-      const boldFont = await pdfDoc.embedFont('Helvetica-Bold');
-      const fontSize = 10;
-      const margin = 50;
-      const tableTop = height - margin - 50;
-
-      page.drawText('Usage Report', { x: margin, y: height - margin, size: 24, font: boldFont, color: rgb(0, 0, 0) });
-
-      const pdfTable = {
-        x: margin,
-        y: tableTop,
-        width: width - 2 * margin,
-        rows: [
-          ['Hashed User Token', 'User', 'Article Title', 'Word Count', 'Overall Assessment', 'Date and Time', 'Count of Analysis'],
-          ...data.map(row => [row.hashedToken, row.user, row.articleTitle, row.wordCount.toString(), row.overallAssessment, row.date, row.analysisCount.toString()])
-        ],
-        colWidths: [120, 100, 150, 80, 100, 120, 100],
-      };
-
-      let y = pdfTable.y;
-      pdfTable.rows.forEach((row, rowIndex) => {
-        let x = pdfTable.x;
-        row.forEach((cell, colIndex) => {
-          page.drawText(cell, { x: x + 5, y: y - 15, size: fontSize, font: rowIndex === 0 ? boldFont : font, color: rgb(0, 0, 0) });
-          x += pdfTable.colWidths[colIndex];
-        });
-        y -= 20;
-        page.drawLine({ start: { x: pdfTable.x, y: y + 5 }, end: { x: pdfTable.x + pdfTable.width, y: y + 5 }, thickness: 0.5, color: rgb(0.5, 0.5, 0.5) });
-      });
-
-      body = await pdfDoc.save();
-      break;
-    default: // csv
-      headers['Content-Type'] = 'text/csv';
-      headers['Content-Disposition'] = 'attachment; filename="usage-report.csv"';
-      let csv = 'hashed_user_token,user,article_title,word_count,overall_assessment,date_and_time,count_of_analysis\n';
-      for (const row of data) {
-        csv += `${row.hashedToken},${row.user},"${row.articleTitle}",${row.wordCount},${row.overallAssessment},${row.date},${row.analysisCount}\n`;
-      }
-      body = csv;
-      break;
-  }
-
-  return new Response(body, { headers });
-}
-
-async function updateUserLimit(request, env) {
-  // The admin check is now handled by the centralized router.
-
-  const { user, limit } = await request.json();
-  if (!user || !limit) {
-    return new Response(JSON.stringify({ error: 'Missing user or limit' }), {
-      status: 400,
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
+    logEvent('error', 'Failed to list users', {
+      error: error.message,
+      stack: error.stack
     });
+    return errorResponse(
+      `Failed to list users: ${error.message}`,
+      'LIST_USERS_FAILED',
+      500,
+      request,
+      env
+    );
   }
-
-  const hashedToken = await hashToken(user);
-  const userData = await env.CITATION_VERIFIER_USERS.get(hashedToken, { type: 'json' });
-
-  if (!userData) {
-    return new Response(JSON.stringify({ error: 'User not found' }), {
-      status: 404,
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
-    });
-  }
-
-  userData.limit = limit;
-  await env.CITATION_VERIFIER_USERS.put(hashedToken, JSON.stringify(userData));
-
-  return new Response(JSON.stringify({ message: `User ${user} limit updated to ${limit}` }), {
-    headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, env) },
-  });
 }
 
-function validateAnalysisRequest(data) {
-  const errors = [];
-  if (!data.text || typeof data.text !== 'string') {
-    errors.push('Text for analysis is required and must be a string.');
-  } else {
-    if (data.text.length < 10) {
-      errors.push('Text must be at least 10 characters long.');
+/**
+ * GET SINGLE USER - GET /admin/users/:token
+ */
+async function getUser(token, request, env) {
+  try {
+    // Validate token format
+    const formatCheck = TokenManager.isValidFormat(token);
+    if (!formatCheck.valid) {
+      return errorResponse(formatCheck.reason, 'INVALID_TOKEN_FORMAT', 400, request, env);
     }
-    if (data.text.length > 50000) {
-      errors.push('Text must not exceed 50,000 characters.');
+    
+    // Get from KV
+    const userData = await env.CITATION_VERIFIER_USERS.get(token);
+    
+    if (!userData) {
+      return errorResponse('User not found', 'USER_NOT_FOUND', 404, request, env);
     }
+    
+    const parsed = JSON.parse(userData);
+    
+    return new Response(JSON.stringify({
+      success: true,
+      token,
+      user: {
+        email: parsed.email,
+        limit: parsed.limit,
+        used: parsed.analyses?.length || 0,
+        remaining: parsed.limit - (parsed.analyses?.length || 0),
+        status: parsed.status || 'active',
+        createdAt: parsed.createdAt,
+        lastUsed: parsed.lastUsed,
+        analyses: parsed.analyses || []
+      }
+    }), {
+      headers: { 'Content-Type': 'application/json' }
+    });
+    
+  } catch (error) {
+    logEvent('error', 'Failed to get user', {
+      token: token.substring(0, 20),
+      error: error.message
+    });
+    return errorResponse(
+      `Failed to get user: ${error.message}`,
+      'GET_USER_FAILED',
+      500,
+      request,
+      env
+    );
   }
-  if (errors.length > 0) {
-    throw new Error(errors.join(' '));
+}
+
+/**
+ * UPDATE USER - PUT /admin/users/:token
+ */
+async function updateUser(token, request, env) {
+  try {
+    const { limit, status } = await request.json();
+    
+    // Get existing user
+    const existing = await env.CITATION_VERIFIER_USERS.get(token);
+    if (!existing) {
+      return errorResponse('User not found', 'USER_NOT_FOUND', 404, request, env);
+    }
+    
+    const userData = JSON.parse(existing);
+    
+    // Update fields
+    if (limit !== undefined) {
+      if (limit < 1 || limit > 1000) {
+        return errorResponse('Limit must be between 1 and 1000', 'INVALID_LIMIT', 400, request, env);
+      }
+      userData.limit = limit;
+    }
+    
+    if (status !== undefined) {
+      if (!['active', 'suspended', 'expired'].includes(status)) {
+        return errorResponse('Invalid status', 'INVALID_STATUS', 400, request, env);
+      }
+      userData.status = status;
+    }
+    
+    userData.updatedAt = new Date().toISOString();
+    
+    // Save back to KV
+    await env.CITATION_VERIFIER_USERS.put(token, JSON.stringify(userData));
+    
+    logEvent('info', 'User updated', {
+      token: token.substring(0, 20),
+      changes: { limit, status }
+    });
+    
+    return new Response(JSON.stringify({
+      success: true,
+      message: 'User updated successfully',
+      user: userData
+    }), {
+      headers: { 'Content-Type': 'application/json' }
+    });
+    
+  } catch (error) {
+    logEvent('error', 'Failed to update user', {
+      token: token.substring(0, 20),
+      error: error.message
+    });
+    return errorResponse(
+      `Failed to update user: ${error.message}`,
+      'UPDATE_USER_FAILED',
+      500,
+      request,
+      env
+    );
+  }
+}
+
+/**
+ * DELETE USER - DELETE /admin/users/:token
+ */
+async function deleteUser(token, request, env) {
+  try {
+    // Check if exists
+    const existing = await env.CITATION_VERIFIER_USERS.get(token);
+    if (!existing) {
+      return errorResponse('User not found', 'USER_NOT_FOUND', 404, request, env);
+    }
+    
+    // Delete from KV
+    await env.CITATION_VERIFIER_USERS.delete(token);
+    
+    logEvent('info', 'User deleted', {
+      token: token.substring(0, 20)
+    });
+    
+    return new Response(JSON.stringify({
+      success: true,
+      message: 'User deleted successfully'
+    }), {
+      headers: { 'Content-Type': 'application/json' }
+    });
+    
+  } catch (error) {
+    logEvent('error', 'Failed to delete user', {
+      token: token.substring(0, 20),
+      error: error.message
+    });
+    return errorResponse(
+      `Failed to delete user: ${error.message}`,
+      'DELETE_USER_FAILED',
+      500,
+      request,
+      env
+    );
   }
 }
 
@@ -407,13 +494,6 @@ function getArticleTitle(text) {
   const firstNLines = text.split('\n').slice(0, 10).join('\n');
   const potentialTitles = firstNLines.split('\n').filter(line => line.trim().length > 0 && line.split(' ').length > 3 && !line.toLowerCase().includes('abstract'));
   return potentialTitles.length > 0 ? potentialTitles[0].trim() : 'Untitled';
-}
-
-async function hashToken(token) {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(token);
-  const hash = await crypto.subtle.digest('SHA-256', data);
-  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
 function logEvent(level, message, context = {}) {
@@ -452,85 +532,14 @@ function getCorsHeaders(request, env) {
     return {
       'Access-Control-Allow-Origin': origin,
       'Vary': 'Origin',
-      'Access-Control-Allow-Methods': 'POST, GET, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      'Access-Control-Allow-Methods': 'POST, GET, PUT, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Admin-Token',
     };
   }
 
   // Return minimal headers if origin is not allowed
   return { 'Vary': 'Origin' };
 }
-
-// The static corsHeaders object is replaced by the dynamic getCorsHeaders function.
-
-function handleOptions(request, env) {
-  const corsHeaders = getCorsHeaders(request, env);
-  if (corsHeaders['Access-Control-Allow-Origin']) {
-    return new Response(null, {
-      headers: corsHeaders,
-    });
-  } else {
-    return new Response(null, {
-      headers: {
-        Allow: 'POST, GET, DELETE, OPTIONS',
-      },
-    });
-  }
-}
-
-class CircuitBreaker {
-  constructor(threshold = 5, timeout = 60000) {
-    this.failureCount = 0;
-    this.threshold = threshold;
-    this.timeout = timeout;
-    this.state = 'CLOSED'; // CLOSED, OPEN, HALF_OPEN
-    this.nextAttempt = Date.now();
-  }
-  
-  async call(fn) {
-    if (this.state === 'OPEN') {
-      if (Date.now() < this.nextAttempt) {
-        const error = new Error('Circuit breaker is OPEN - service temporarily unavailable');
-        error.code = 'CIRCUIT_BREAKER_OPEN';
-        throw error;
-      }
-      this.state = 'HALF_OPEN';
-    }
-    
-    try {
-      const result = await fn();
-      this.onSuccess();
-      return result;
-    } catch (error) {
-      this.onFailure();
-      
-      // ✅ ADD CONTEXT TO ERROR
-      logEvent('error', 'Circuit breaker caught error', {
-        errorMessage: error.message,
-        state: this.state,
-        failures: this.failureCount
-      });
-      
-      throw error; // Re-throw with original error
-    }
-  }
-  
-  onSuccess() {
-    this.failureCount = 0;
-    this.state = 'CLOSED';
-  }
-  
-  onFailure() {
-    this.failureCount++;
-    if (this.failureCount >= this.threshold) {
-      this.state = 'OPEN';
-      this.nextAttempt = Date.now() + this.timeout;
-      logEvent('error', 'Circuit breaker OPEN for DeepSeek API');
-    }
-  }
-}
-
-const deepSeekCircuitBreaker = new CircuitBreaker();
 
 const querySemanticScholar = async (claim) => {
   try {
@@ -611,7 +620,8 @@ async function performAnalysis(text, apiKey) {
   };
 
   // Step 1: Extract
-  const extractPrompt = `Analyze this academic text and extract key claims and citations.\n\nText: \"${text}\"\n\nYOU MUST RESPOND WITH ONLY A VALID JSON OBJECT. NO OTHER TEXT BEFORE OR AFTER THE JSON.\n\nFormat:\n{\n  \"keyClaims\": [\n    {\"claim\": \"text of claim\", \"requiresCitation\": true, \"hasCitation\": false, \"citationText\": \"author year or empty\"}\n  ],
+  const extractPrompt = `Analyze this academic text and extract key claims and citations.\n\nText: \"${text}\"\n\nYOU MUST RESPOND WITH ONLY A VALID JSON OBJECT. NO OTHER TEXT BEFORE OR AFTER THE JSON.\n\nFormat:\n{\n  \"keyClaims\": [\n    {\"claim\": \"text of claim\", \"requiresCitation\": true, \"hasCitation\": false, \"citationText\": \"author year or empty\"}
+  ],
   \"explicitCitations\": [\n    {\"text\": \"citation as appears\", \"authors\": \"if identifiable\", \"year\": \"if identifiable\"}
   ],
     \"missingCitations\": [\"claim without proper citation\"],
@@ -623,7 +633,9 @@ async function performAnalysis(text, apiKey) {
   const claimsToCheck = extraction.keyClaims.slice(0, 3);
   const searchResults = [];
   for (const claim of claimsToCheck) {
-    const searchPrompt = `Assess the credibility and verifiability of this claim from an academic publication: \"${claim.claim}\"\n\n${claim.citationText ? `The claim cites: ${claim.citationText}` : 'No citation provided for this claim.'}\n\nYOU MUST RESPOND WITH ONLY A VALID JSON OBJECT. NO OTHER TEXT.\n\nFormat:\n{\n  \"claim\": \"${claim.claim}\",\n  \"credibilityScore\": \"high or medium or low\",\n  \"supportingEvidence\": [\"brief point 1\", \"brief point 2\"],
+    const searchPrompt = `Assess the credibility and verifiability of this claim from an academic publication: \"${claim.claim}\"\n\n${claim.citationText ? `The claim cites: ${claim.citationText}` : 'No citation provided for this claim.'}\n\nYOU MUST RESPOND WITH ONLY A VALID JSON OBJECT. NO OTHER TEXT.\n\nFormat:\n{\n  \"claim\": \"${claim.claim}\",
+  \"credibilityScore\": \"high or medium or low\",
+  \"supportingEvidence\": [\"brief point 1\", \"brief point 2\"],
   \"contradictingEvidence\": [\"brief point if found\"],
   \"retractionsFound\": false,\n  \"reasoning\": \"one sentence explanation\",
   \"citationStatus\": \"properly cited or missing citation or questionable citation\"\n}\n\nRESPOND ONLY WITH THE JSON OBJECT. NO ADDITIONAL TEXT.`;
@@ -648,8 +660,7 @@ YOU MUST RESPOND WITH ONLY A VALID JSON OBJECT. NO OTHER TEXT.\n\nFormat:\n{\n  
   \"citationQuality\": \"one sentence assessment\",
   \"majorConcerns\": [\"concern 1\", \"concern 2\"],
   \"recommendations\": [\"recommendation 1\", \"recommendation 2\"],
-  \"verdict\": \"accept or minor revisions or major revisions or reject\",
-  \"documentTypeNote\": \"note about limitations if abstract only\"\n}\n\nRESPOND ONLY WITH THE JSON OBJECT. NO ADDITIONAL TEXT BEFORE OR AFTER.`;
+  \"verdict\": \"accept or minor revisions or major revisions or reject\",\n  \"documentTypeNote\": \"note about limitations if abstract only\"\n}\n\nRESPOND ONLY WITH THE JSON OBJECT. NO ADDITIONAL TEXT BEFORE OR AFTER.`;
   const reviewResponse = await callDeepSeek([{ role: "user", content: reviewPrompt }], apiKey);
   const review = parseJSON(reviewResponse);
 
@@ -668,23 +679,22 @@ export class RateLimiter {
       return new Response('Cache cleared');
     }
 
-    let hashedToken; // Define here to be accessible in catch block
+    const token = request.headers.get('X-Worker-Token');
     try {
       const body = await request.json();
-      hashedToken = body.hashedToken;
       const text = body.text;
 
-      logEvent('info', 'Rate limiter DO received request', { hashedToken: hashedToken?.substring(0, 10), textLength: text?.length || 0 });
+      logEvent('info', 'Rate limiter DO received request', { token: token?.substring(0, 20), textLength: text?.length || 0 });
 
       // Always fetch the user from KV
-      const user = await this.env.CITATION_VERIFIER_USERS.get(hashedToken, { type: 'json' });
+      const user = await this.env.CITATION_VERIFIER_USERS.get(token, { type: 'json' });
       if (!user) {
-        logEvent('warn', 'User not found in KV', { hashedToken: hashedToken?.substring(0, 10) });
+        logEvent('warn', 'User not found in KV', { token: token?.substring(0, 20) });
         return errorResponse('Unauthorized: Invalid token', 'INVALID_TOKEN', 401, request, this.env);
       }
 
       if (user.analyses.length >= user.limit) {
-        logEvent('warn', 'Usage limit exceeded for user', { hashedToken: hashedToken?.substring(0, 10), limit: user.limit });
+        logEvent('warn', 'Usage limit exceeded for user', { token: token?.substring(0, 20), limit: user.limit });
         return errorResponse('Usage limit exceeded.', 'LIMIT_EXCEEDED', 429, request, this.env);
       }
 
@@ -693,10 +703,11 @@ export class RateLimiter {
       const wordCount = text.trim().split(/\s+/).length;
       
       user.analyses.push({ articleTitle, wordCount, overallAssessment, date: new Date().toISOString() });
+      user.lastUsed = new Date().toISOString();
       
-      await this.env.CITATION_VERIFIER_USERS.put(hashedToken, JSON.stringify(user));
+      await this.env.CITATION_VERIFIER_USERS.put(token, JSON.stringify(user));
       
-      logEvent('info', 'Analysis successful', { hashedToken: hashedToken?.substring(0, 10) });
+      logEvent('info', 'Analysis successful', { token: token?.substring(0, 20) });
 
       return new Response(JSON.stringify({ analysis }), {
         headers: { 'Content-Type': 'application/json', ...getCorsHeaders(request, this.env) },
@@ -714,7 +725,9 @@ export class RateLimiter {
       return errorResponse(
         error.message || 'Analysis failed due to an unknown error',
         'ANALYSIS_FAILED',
-        500
+        500,
+        request,
+        this.env
       );
     }
   }

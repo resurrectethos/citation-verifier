@@ -42,7 +42,8 @@ The project is a monorepo with two main components:
 
 2.  **Installation:**
     *   Clone the repository.
-    *   Run `npm install` in the root directory to install the dependencies for both the frontend and the backend.
+    *   Run `npm install` in the root directory to install the dependencies for the frontend.
+    *   Run `npm install` in the `backend` directory to install the dependencies for the backend.
 
 3.  **Running the Frontend:**
     *   `cd` into the root directory.
@@ -50,7 +51,7 @@ The project is a monorepo with two main components:
 
 4.  **Running the Backend:**
     *   `cd` into the `backend` directory.
-    *   Run `wrangler dev` to start the development server for the Cloudflare Worker.
+    *   Run `npm run dev` to start the development server for the Cloudflare Worker.
 
 ### 2.3. Deploying the Application
 
@@ -63,14 +64,21 @@ The frontend is deployed to Cloudflare Pages. The deployment is automatically tr
 The backend is deployed to Cloudflare Workers. To deploy the backend, run the following command from the `backend` directory:
 
 ```bash
-wrangler deploy
+npm run deploy
 ```
 
 ### 2.4. External Services
 
 The backend uses the following external services:
 
-*   **DeepSeek API:** The DeepSeek API is used for the core text analysis functionality. You need to provide a `DEEPSEEK_API_KEY` environment variable in your `wrangler.toml` file to use this service.
+*   **DeepSeek API:** The DeepSeek API is used for the core text analysis functionality. You need to set the `DEEPSEEK_API_KEY` secret using the Wrangler CLI.
+*   **Admin Secret:** The admin endpoints are protected by a secret token. You need to set the `ADMIN_SECRET` secret using the Wrangler CLI.
+
+To set secrets, use the following command from the `backend` directory:
+
+```bash
+npx wrangler secret put SECRET_NAME
+```
 
 ---
 
@@ -79,6 +87,8 @@ The backend uses the following external services:
 ### 3.1. Authentication
 
 All API requests require authentication. The API uses a bearer token authentication scheme.
+
+The user token has the format `usr_[timestamp]_[random]`, for example: `usr_1760877701604_0b7731c3061c`.
 
 To authenticate, include an `Authorization` header with your request:
 
@@ -137,9 +147,19 @@ Creates a new user.
 
 Returns a JSON object with the new user's details, including the generated token.
 
-#### `DELETE /admin/users/:token`
+```json
+{
+  "success": true,
+  "token": "usr_1760877701604_0b7731c3061c",
+  "email": "test@example.com",
+  "limit": 5,
+  "message": "User created successfully"
+}
+```
 
-Deletes a user.
+#### `GET /admin/users/:token`
+
+Retrieves a single user by their token.
 
 **Headers:**
 
@@ -151,24 +171,44 @@ Deletes a user.
 
 **Response:**
 
-Returns a JSON object with a success message.
+Returns a JSON object with the user's details.
 
-#### `POST /admin/update-limit`
+#### `PUT /admin/users/:token`
 
-Updates a user's usage limit.
+Updates a user's limit or status.
 
 **Headers:**
 
 *   `X-Admin-Token`: Your admin token.
 
+**URL Parameters:**
+
+*   `token`: The user's token.
+
 **Request Body:**
 
 ```json
 {
-  "user": "USER_TOKEN",
-  "limit": 10
+  "limit": 10,
+  "status": "suspended"
 }
 ```
+
+**Response:**
+
+Returns a JSON object with the updated user details.
+
+#### `DELETE /admin/users/:token`
+
+Deletes a user.
+
+**Headers:**
+
+*   `X-Admin-Token`: Your admin token.
+
+**URL Parameters:**
+
+*   `token`: The user's token.
 
 **Response:**
 
