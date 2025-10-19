@@ -6,7 +6,7 @@ const CitationVerifier = () => {
   const [analysis, setAnalysis] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [progress, setProgress] = useState('');
+  const [progress, setProgress] = useState(0);
   const [fileName, setFileName] = useState('');
   const [userToken, setUserToken] = useState(''); // New state for user token
   const [darkMode, setDarkMode] = useState(localStorage.getItem('darkMode') === 'true');
@@ -37,6 +37,17 @@ const CitationVerifier = () => {
     }
   }, [darkMode]);
 
+  // Simulate progress
+  useEffect(() => {
+    if (loading) {
+      const interval = setInterval(() => {
+        setProgress(prev => Math.min(prev + 1, 95));
+      }, 7000); // Update every 7 seconds
+      
+      return () => clearInterval(interval);
+    }
+  }, [loading]);
+
   const parseJSON = (text) => {
     let cleaned = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
     const start = cleaned.indexOf('{');
@@ -58,11 +69,10 @@ const CitationVerifier = () => {
 
     setFileName(file.name);
     setError(null);
-    setProgress('Reading file...');
+    setProgress(0);
 
     try {
       if (file.type === 'application/pdf') {
-        setProgress('Extracting text from PDF...');
         const reader = new FileReader();
         reader.onload = async (e) => {
           try {
@@ -77,25 +87,21 @@ const CitationVerifier = () => {
               content += textContent.items.map(item => item.str).join(' ');
             }
             setText(content);
-            setProgress('');
           } catch (err) {
             console.error("PDF parsing error:", err);
             setError(`Failed to parse PDF: ${err.message}`);
-            setProgress('');
           }
         };
         reader.readAsArrayBuffer(file);
       } else if (file.type === 'text/plain') {
         const textContent = await file.text();
         setText(textContent);
-        setProgress('');
       } else {
         throw new Error('Unsupported file type. Please upload PDF or TXT files.');
       }
     } catch (err) {
       console.error("File upload error:", err);
       setError(`File upload failed: ${err.message}`);
-      setProgress('');
       setFileName('');
     }
   };
@@ -109,7 +115,7 @@ const CitationVerifier = () => {
     setLoading(true);
     setError(null);
     setAnalysis(null);
-    setProgress('Analyzing publication and extracting claims...');
+    setProgress(1);
 
     try {
       const response = await fetch('https://citation-verifier-backend.preggyr.workers.dev', {
@@ -122,17 +128,20 @@ const CitationVerifier = () => {
       });
 
       if (!response.ok) {
+        if (response.status === 401) {
+          throw new Error('Authentication failed. Please check your access token.');
+        }
         const errorData = await response.json();
         throw new Error(errorData.error || `Request failed: ${response.status}`);
       }
 
       const data = await response.json();
       setAnalysis(data.analysis);
-      setProgress('');
+      setProgress(100);
     } catch (err) {
       console.error("Analysis error:", err);
-      setError(`Analysis failed: ${err.message}.`);
-      setProgress('');
+      setError(`Analysis failed: ${err.message ? err.message : JSON.stringify(err)}.`);
+      setProgress(0);
     } finally {
       setLoading(false);
     }
@@ -412,11 +421,17 @@ const CitationVerifier = () => {
             )}
           </button>
 
-          {progress && (
-            <div className="mt-4 p-4 bg-blue-50 dark:bg-blue-900/50 border border-blue-200 dark:border-blue-900/70 rounded-lg">
-              <p className="text-blue-800 dark:text-blue-300 flex items-center gap-2">
-                <Loader2 className="w-4 h-4 animate-spin" />
-                {progress}
+          {loading && (
+            <div className="mt-4">
+              <div className="progress-bar bg-gray-200 rounded-full h-4 dark:bg-gray-700">
+                <div
+                  className="bg-primary h-4 rounded-full"
+                  style={{ width: `${progress}%` }}
+                ></div>
+              </div>
+              <p className="text-center mt-2">Analyzing document... {progress}%</p>
+              <p className="text-sm text-gray-500 text-center">
+                This may take up to 15 minutes for longer documents
               </p>
             </div>
           )}
